@@ -303,8 +303,6 @@ enum AgentHooksInstaller {
 
     // Install OpenCode's auto-discovered global plugin only when ~/.config/opencode exists. Same
     // ownership / degrade-to-warning policy as Pi; no backup (managed plugin carries no user state).
-    // Also copies `agterm-status-logic.mjs` beside the plugin (relative import); OpenCode does not
-    // auto-load `.mjs`, so it is never treated as a second plugin entry.
     private static func installOpenCodePlugin() throws -> OpenCodeResult {
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser
@@ -312,18 +310,15 @@ enum AgentHooksInstaller {
         guard fm.fileExists(atPath: opencodeDirectory.path) else { return .noOpenCode }
 
         let source = destinationFolder.appendingPathComponent(AgentHooksInstall.opencodePluginRelativePath)
-        let logicSource = destinationFolder.appendingPathComponent(AgentHooksInstall.opencodePluginLogicRelativePath)
-        guard fm.fileExists(atPath: source.path), fm.fileExists(atPath: logicSource.path) else {
+        guard fm.fileExists(atPath: source.path) else {
             throw InstallError(message: "The OpenCode status plugin is not bundled in this build.")
         }
         let sourceContents = try String(contentsOf: source, encoding: .utf8)
-        let logicContents = try String(contentsOf: logicSource, encoding: .utf8)
         guard sourceContents.contains(AgentHooksInstall.opencodePluginMarker) else {
             throw InstallError(message: "The bundled OpenCode status plugin is missing its ownership marker.")
         }
 
         let destination = URL(fileURLWithPath: AgentHooksInstall.opencodePluginPath(home: home.path))
-        let logicDestination = URL(fileURLWithPath: AgentHooksInstall.opencodePluginLogicPath(home: home.path))
         let existing: String?
         do {
             existing = try readExistingConfig(at: destination)
@@ -333,17 +328,13 @@ enum AgentHooksInstaller {
         guard AgentHooksInstall.mayOverwriteOpenCodePlugin(fileExists: existing != nil, existingContents: existing) else {
             return .userOwned
         }
-        let existingLogic = try? String(contentsOf: logicDestination, encoding: .utf8)
-        guard existing != sourceContents || existingLogic != logicContents else { return .alreadyConfigured }
+        guard existing != sourceContents else { return .alreadyConfigured }
 
         do {
             try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
             let target = symlinkTarget(of: destination) ?? destination
             let mode = AgentHooksInstall.posixMode(ofFile: target.path)
             try writePreservingSymlink(sourceContents, to: destination, posixMode: mode)
-            let logicTarget = symlinkTarget(of: logicDestination) ?? logicDestination
-            let logicMode = AgentHooksInstall.posixMode(ofFile: logicTarget.path)
-            try writePreservingSymlink(logicContents, to: logicDestination, posixMode: logicMode)
         } catch {
             return .writeFailed
         }
