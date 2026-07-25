@@ -5,38 +5,83 @@
 //
 // IMPORTANT: this module must export ONLY plugin function(s). OpenCode's legacy loader treats
 // every export as a plugin and throws "Plugin export is not a function" on non-functions.
-// Testable helpers live in agterm-status-logic.mjs (not auto-discovered: OpenCode globs *.{js,ts}).
 
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import {
-  createReportQueue,
-  mapChatMessageToArgs,
-  mapEventToArgs,
-} from "./agterm-status-logic.mjs";
+
+const ACTIVE = ["active", "--blink"];
+const BLOCKED = ["blocked"];
+const COMPLETED = ["completed", "--auto-reset"];
 
 function defaultWrapperPath() {
   return join(homedir(), ".config", "agterm", "agent-status", "agterm-agent-status.sh");
 }
 
+function statusArgsFromSessionStatus(status) {
+  const kind = typeof status === "string" ? status : status?.type;
+  if (typeof kind !== "string") return null;
+  switch (kind.toLowerCase()) {
+    case "busy":
+    case "retry":
+      return ACTIVE;
+    case "idle":
+      return COMPLETED;
+    default:
+      return null;
+  }
+}
+
+/** Map OpenCode bus events to wrapper argv. Unknown / deprecated events are ignored. */
+function mapEventToArgs(event) {
+  const type = event?.type;
+  const properties = event?.properties ?? {};
+  switch (type) {
+    case "session.status":
+      return statusArgsFromSessionStatus(properties.status);
+    case "permission.asked":
+    case "question.asked":
+    case "session.error":
+      return BLOCKED;
+    // Clear blocked after the user answers; session.status(busy) may lag behind the reply.
+    case "permission.replied":
+    case "question.replied":
+    case "question.rejected":
+      return ACTIVE;
+    // deprecated: OpenCode also emits session.status(type=idle); handling both would double-fire completed
+    case "session.idle":
+      return null;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Serialize reports so a slow spawn cannot reorder status.
+ * Status reporting is advisory and must never reject into OpenCode's Effect fiber.
+ */
+function createReportQueue(reportFn) {
+  let chain = Promise.resolve();
+  return function enqueue(args) {
+    if (!args || args.length === 0) return Promise.resolve();
+    const pending = chain.then(() => reportFn(args));
+    chain = pending.catch(() => {});
+    // Swallow rejection on the returned promise too — chat.message/event may run under Effect.promise.
+    return pending.catch(() => {});
+  };
+}
+
 function spawnReport(wrapper, args) {
+  // Wait for the child to exit. Do not time out the wait: resolving early lets the queue start the
+  // next report while this wrapper (or agtermctl) is still running, which reorders status under load.
+  // A missing wrapper hits 'error' immediately; a healthy status spawn is fast.
   return new Promise((resolve) => {
     const child = spawn(wrapper, args, {
       stdio: "ignore",
       env: process.env,
     });
-    const finish = () => resolve();
-    child.on("error", finish);
-    child.on("close", finish);
-    setTimeout(() => {
-      try {
-        child.kill();
-      } catch {
-        /* ignore */
-      }
-      finish();
-    }, 1_000);
+    child.on("error", () => resolve());
+    child.on("close", () => resolve());
   });
 }
 
@@ -49,22 +94,13 @@ export const AgtermStatusPlugin = async () => {
     return {};
   }
 
-  const childSessions = new Set();
   const wrapper = process.env.AGTERM_STATUS_WRAPPER || defaultWrapperPath();
   const enqueue = createReportQueue((args) => spawnReport(wrapper, args));
 
-  async function reportFromEvent(event) {
-    const args = mapEventToArgs(event, { childSessions });
-    if (args) await enqueue(args);
-  }
-
   return {
-    "chat.message": async ({ sessionID }) => {
-      const args = mapChatMessageToArgs(sessionID, childSessions);
-      if (args) await enqueue(args);
-    },
     event: async ({ event }) => {
-      await reportFromEvent(event);
+      const args = mapEventToArgs(event);
+      if (args) await enqueue(args);
     },
   };
 };

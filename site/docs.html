@@ -1983,10 +1983,7 @@
               When OpenCode has already created
               <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">~/.config/opencode</span>,
               the installer also adds a lifecycle plugin at
-              <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">~/.config/opencode/plugins/agterm-status.js</span>
-              (plus companion
-              <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">agterm-status-logic.mjs</span>):
-              the <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">.js</span> exports only the plugin function;
+              <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">~/.config/opencode/plugins/agterm-status.js</span>:
               <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">session.status</span>
               <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">busy</span>/<span
                 style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc"
@@ -1995,7 +1992,8 @@
               → active,
               <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">idle</span> → completed,
               permission/question prompts and
-              <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">session.error</span> → blocked.
+              <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">session.error</span> → blocked,
+              reply/reject → active.
               Deprecated
               <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">session.idle</span>
               is ignored so it does not double-fire with
