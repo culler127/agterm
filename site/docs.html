@@ -2035,9 +2035,11 @@
                 >retry</span
               >
               → active,
-              <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">idle</span> → completed,
+              <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">idle</span> → completed
+              (only for a session that previously saw busy/retry),
               permission/question prompts and
-              <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">session.error</span> → blocked,
+              <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">session.error</span> → blocked
+              (and the following idle from halt is swallowed so blocked is not overwritten),
               reply/reject → active.
               Deprecated
               <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">session.idle</span>

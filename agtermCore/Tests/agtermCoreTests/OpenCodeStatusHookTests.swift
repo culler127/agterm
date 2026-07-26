@@ -1,27 +1,18 @@
 import Foundation
 import Testing
 
-// Exercises the OpenCode plugin shipped by the Help-menu installer. Event-to-status mapping and
-// wrapper spawning belong to this installed plugin, not to agterm's runtime status engine.
-// Drives the plugin through Node (same host OpenCode uses) with AGTERM_STATUS_WRAPPER recording argv.
-struct OpenCodeStatusHookTests {
-    private static var plugin: String {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("agterm/Resources/agent-status/opencode/agterm-status.js")
-            .path
-    }
-
-    private static var node: String? {
+/// Resolves `node` for OpenCodeStatusHookTests. Kept outside the suite type so `@Suite(.enabled(if:))`
+/// can reference it without a circular macro resolution on the suite itself.
+private enum OpenCodeStatusHookSupport {
+    /// First `node` on PATH, or nil. Suite-gated via `.enabled(if:)` so machines without Node skip
+    /// visibly rather than failing (README lists Node only as a test dependency).
+    static var node: String? {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         proc.arguments = ["which", "node"]
         let out = Pipe()
         proc.standardOutput = out
-        proc.standardError = Pipe()
+        proc.standardError = FileHandle.nullDevice
         do {
             try proc.run()
             proc.waitUntilExit()
@@ -33,16 +24,59 @@ struct OpenCodeStatusHookTests {
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return path.isEmpty ? nil : path
     }
+}
+
+// Exercises the OpenCode plugin shipped by the Help-menu installer. Event-to-status mapping and
+// wrapper spawning belong to this installed plugin, not to agterm's runtime status engine.
+// Drives the plugin through Node (same host OpenCode uses) with AGTERM_STATUS_WRAPPER recording argv.
+// Skipped when node is absent — the app does not require Node at runtime; only these tests do.
+@Suite(.enabled(if: OpenCodeStatusHookSupport.node != nil,
+                "node is required to exercise the OpenCode status plugin; install Node.js to run these tests"))
+struct OpenCodeStatusHookTests {
+    private static var plugin: String {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("agterm/Resources/agent-status/opencode/agterm-status.js")
+            .path
+    }
+
+    /// Run a node process; on non-zero exit, surface stderr so the failure names the cause.
+    private func runNode(arguments: [String], environment: [String: String]) throws -> Int32 {
+        let node = try #require(OpenCodeStatusHookSupport.node)
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: node)
+        proc.arguments = arguments
+        proc.environment = environment
+        let stdout = Pipe()
+        let stderr = Pipe()
+        proc.standardOutput = stdout
+        proc.standardError = stderr
+        try proc.run()
+        proc.waitUntilExit()
+        if proc.terminationStatus != 0 {
+            let err = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            let out = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            Issue.record(
+                """
+                node exited \(proc.terminationStatus)
+                args: \(arguments)
+                stderr:
+                \(err)
+                stdout:
+                \(out)
+                """
+            )
+        }
+        return proc.terminationStatus
+    }
 
     /// Run the plugin's `event` hook for each OpenCode bus payload; returns recorded wrapper argv lines.
     private func runEvents(_ events: [[String: Any]],
                            setStatusWrapper: Bool = true,
                            sessionID: String? = "sid") throws -> [String] {
-        guard let node = Self.node else {
-            Issue.record("node is required to exercise the OpenCode status plugin")
-            return []
-        }
-
         let fm = FileManager.default
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("agterm-opencode-hook-\(UUID().uuidString)")
@@ -74,8 +108,8 @@ struct OpenCodeStatusHookTests {
         try String(data: JSONSerialization.data(withJSONObject: events), encoding: .utf8)!
             .write(to: eventsFile, atomically: true, encoding: .utf8)
 
-        // Harness stays out of Resources (would ship to users). --experimental-default-type=module
-        // lets Node load the plugin's .js as ESM without a package.json beside it.
+        // Harness stays out of Resources (would ship to users). The harness is .mjs; Node loads the
+        // plugin's .js as ESM via dynamic import / module-syntax detection — no --experimental-* flag.
         let harness = dir.appendingPathComponent("harness.mjs")
         try """
         import { readFileSync } from "node:fs";
@@ -89,9 +123,6 @@ struct OpenCodeStatusHookTests {
         }
         """.write(to: harness, atomically: true, encoding: .utf8)
 
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: node)
-        proc.arguments = ["--experimental-default-type=module", harness.path]
         var environment: [String: String] = [
             "HOME": home.path,
             "PATH": "/usr/bin:/bin",
@@ -104,12 +135,7 @@ struct OpenCodeStatusHookTests {
         if setStatusWrapper {
             environment["AGTERM_STATUS_WRAPPER"] = statusWrapper.path
         }
-        proc.environment = environment
-        proc.standardOutput = Pipe()
-        proc.standardError = Pipe()
-        try proc.run()
-        proc.waitUntilExit()
-        #expect(proc.terminationStatus == 0)
+        #expect(try runNode(arguments: [harness.path], environment: environment) == 0)
 
         return ((try? String(contentsOf: statuses, encoding: .utf8)) ?? "")
             .split(separator: "\n").map(String.init)
@@ -119,43 +145,45 @@ struct OpenCodeStatusHookTests {
         ["type": type, "properties": properties]
     }
 
+    private func status(_ kind: String, sessionID: String = "ses_root") -> [String: Any] {
+        event("session.status", properties: ["sessionID": sessionID, "status": ["type": kind]])
+    }
+
     @Test func pluginExportsOnlyPluginFunctions() throws {
-        guard let node = Self.node else {
-            Issue.record("node is required to exercise the OpenCode status plugin")
-            return
+        let fm = FileManager.default
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("agterm-opencode-exports-\(UUID().uuidString)")
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+        // .mjs harness — avoid node -e (needs --input-type=module) and the removed
+        // --experimental-default-type=module flag.
+        let harness = dir.appendingPathComponent("exports.mjs")
+        try """
+        import { pathToFileURL } from "node:url";
+        const mod = await import(pathToFileURL(process.env.AGTERM_OPENCODE_PLUGIN).href);
+        const keys = Object.keys(mod);
+        if (keys.length !== 1 || keys[0] !== "AgtermStatusPlugin") process.exit(2);
+        if (typeof mod.AgtermStatusPlugin !== "function") process.exit(3);
+        for (const [name, value] of Object.entries(mod)) {
+          if (typeof value !== "function") process.exit(4);
         }
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: node)
-        proc.arguments = [
-            "--experimental-default-type=module",
-            "-e",
-            """
-            import { pathToFileURL } from "node:url";
-            const mod = await import(pathToFileURL(process.argv[1]).href);
-            const keys = Object.keys(mod);
-            if (keys.length !== 1 || keys[0] !== "AgtermStatusPlugin") process.exit(2);
-            if (typeof mod.AgtermStatusPlugin !== "function") process.exit(3);
-            for (const [name, value] of Object.entries(mod)) {
-              if (typeof value !== "function") process.exit(4);
-            }
-            """,
-            Self.plugin,
-        ]
-        proc.standardOutput = Pipe()
-        proc.standardError = Pipe()
-        try proc.run()
-        proc.waitUntilExit()
-        #expect(proc.terminationStatus == 0)
+        """.write(to: harness, atomically: true, encoding: .utf8)
+        #expect(try runNode(
+            arguments: [harness.path],
+            environment: [
+                "PATH": "/usr/bin:/bin",
+                "AGTERM_OPENCODE_PLUGIN": Self.plugin,
+            ]
+        ) == 0)
     }
 
     @Test func lifecycleEventsDriveOnlyTheGenericStatusWrapper() throws {
         let calls = try runEvents([
-            event("session.status", properties: ["status": ["type": "busy"]]),
-            event("session.status", properties: ["status": ["type": "retry"]]),
-            event("session.status", properties: ["status": ["type": "idle"]]),
+            status("busy"),
+            status("retry"),
+            status("idle"),
             event("permission.asked"),
             event("question.asked"),
-            event("session.error"),
             event("permission.replied"),
             event("question.replied"),
             event("question.rejected"),
@@ -166,10 +194,41 @@ struct OpenCodeStatusHookTests {
             "completed --auto-reset",
             "blocked",
             "blocked",
-            "blocked",
             "active --blink",
             "active --blink",
             "active --blink",
+        ])
+    }
+
+    @Test func sessionErrorStaysBlockedThroughFollowingIdle() throws {
+        // SessionProcessor.halt publishes session.error then status(idle) on the next line; without an
+        // errored latch the serial queue would overwrite blocked with completed --auto-reset.
+        let calls = try runEvents([
+            status("busy"),
+            event("session.error", properties: ["sessionID": "ses_root"]),
+            status("idle"),
+        ])
+        #expect(calls == ["active --blink", "blocked"])
+    }
+
+    @Test func idleWithoutPrecedingBusyIsIgnored() throws {
+        let calls = try runEvents([
+            status("idle"),
+            status("idle", sessionID: "ses_never_busy"),
+        ])
+        #expect(calls.isEmpty)
+    }
+
+    @Test func subagentIdleDoesNotCompleteWhileParentIsActive() throws {
+        // needsAttention would otherwise pull the still-working parent into attention nav / auto-follow.
+        let calls = try runEvents([
+            status("busy", sessionID: "ses_parent"),
+            status("idle", sessionID: "ses_child"),
+            status("idle", sessionID: "ses_parent"),
+        ])
+        #expect(calls == [
+            "active --blink",
+            "completed --auto-reset",
         ])
     }
 
@@ -187,7 +246,7 @@ struct OpenCodeStatusHookTests {
 
     @Test func pluginIsSilentNoOpOutsideAgterm() throws {
         let calls = try runEvents(
-            [event("session.status", properties: ["status": ["type": "busy"]])],
+            [status("busy")],
             sessionID: nil
         )
         #expect(calls.isEmpty)
@@ -202,11 +261,7 @@ struct OpenCodeStatusHookTests {
     }
 
     @Test func reportsRunStrictlyInOrder() throws {
-        // Gate protocol: blocked holds until `release` exists; completed must not start until then.
-        guard let node = Self.node else {
-            Issue.record("node is required to exercise the OpenCode status plugin")
-            return
-        }
+        // Gate protocol: blocked holds until `release` exists; the next report must not start until then.
         let fm = FileManager.default
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("agterm-opencode-order-\(UUID().uuidString)")
@@ -227,9 +282,10 @@ struct OpenCodeStatusHookTests {
         """.write(to: wrapper, atomically: true, encoding: .utf8)
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: wrapper.path)
 
+        // permission.asked / replied always report (no active-set gate), so the queue order is isolated.
         let events: [[String: Any]] = [
             event("permission.asked"),
-            event("session.status", properties: ["status": ["type": "idle"]]),
+            event("permission.replied"),
         ]
         let eventsFile = dir.appendingPathComponent("events.json")
         try String(data: JSONSerialization.data(withJSONObject: events), encoding: .utf8)!
@@ -248,9 +304,9 @@ struct OpenCodeStatusHookTests {
         const releasePath = process.env.AGTERM_OPENCODE_RELEASE;
         const statusesPath = process.env.AGTERM_OPENCODE_STATUSES;
         for (let i = 0; i < 500 && !existsSync(startedPath); i++) await sleep(10);
-        // While blocked is held, completed must not have started (queue serializes spawns).
+        // While blocked is held, the follow-up active report must not have started (queue serializes).
         const started = existsSync(startedPath) ? readFileSync(startedPath, "utf8") : "";
-        if (started.includes("completed")) {
+        if (started.includes("active")) {
           writeFileSync(releasePath, "1");
           await pending;
           process.exit(2);
@@ -264,29 +320,23 @@ struct OpenCodeStatusHookTests {
         await pending;
         """.write(to: harness, atomically: true, encoding: .utf8)
 
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: node)
-        proc.arguments = ["--experimental-default-type=module", harness.path]
-        proc.environment = [
-            "HOME": dir.path,
-            "PATH": "/usr/bin:/bin",
-            "AGTERM_SESSION_ID": "sid",
-            "AGTERM_STATUS_WRAPPER": wrapper.path,
-            "AGTERM_OPENCODE_PLUGIN": Self.plugin,
-            "AGTERM_OPENCODE_EVENTS": eventsFile.path,
-            "AGTERM_OPENCODE_STARTED": started.path,
-            "AGTERM_OPENCODE_RELEASE": release.path,
-            "AGTERM_OPENCODE_STATUSES": statuses.path,
-        ]
-        let err = Pipe()
-        proc.standardOutput = Pipe()
-        proc.standardError = err
-        try proc.run()
-        proc.waitUntilExit()
-        #expect(proc.terminationStatus == 0)
+        #expect(try runNode(
+            arguments: [harness.path],
+            environment: [
+                "HOME": dir.path,
+                "PATH": "/usr/bin:/bin",
+                "AGTERM_SESSION_ID": "sid",
+                "AGTERM_STATUS_WRAPPER": wrapper.path,
+                "AGTERM_OPENCODE_PLUGIN": Self.plugin,
+                "AGTERM_OPENCODE_EVENTS": eventsFile.path,
+                "AGTERM_OPENCODE_STARTED": started.path,
+                "AGTERM_OPENCODE_RELEASE": release.path,
+                "AGTERM_OPENCODE_STATUSES": statuses.path,
+            ]
+        ) == 0)
 
         let calls = ((try? String(contentsOf: statuses, encoding: .utf8)) ?? "")
             .split(separator: "\n").map(String.init)
-        #expect(calls == ["blocked", "completed --auto-reset"])
+        #expect(calls == ["blocked", "active --blink"])
     }
 }

@@ -159,9 +159,14 @@ paths:
   `~/.config/opencode/plugins/agterm-status.js`.
   The file exports ONLY `AgtermStatusPlugin`
   (OpenCode's legacy loader treats every export as a plugin and rejects non-functions).
-  OpenCode `session.status` `busy`/`retry` send `active --blink`;
-  `idle` sends `completed --auto-reset`;
+  OpenCode `session.status` `busy`/`retry` send `active --blink`
+  and remember the sessionID;
+  `idle` sends `completed --auto-reset` only for a sessionID that previously
+  saw busy/retry (a subagent idle must not paint completed onto a busy parent).
   `permission.asked`/`question.asked`/`session.error` send `blocked`;
+  `session.error` also latches the sessionID so the following
+  `session.status(idle)` that halt always publishes is swallowed
+  (otherwise the serial report queue would overwrite blocked with completed).
   `permission.replied`/`question.replied`/`question.rejected` send `active --blink`
   so a blocked glyph clears when the user answers.
   Deprecated `session.idle` is ignored so it does not double-fire with

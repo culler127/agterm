@@ -449,7 +449,9 @@ enum AgentHooksInstaller {
         case .writeFailed:
             return "OpenCode's lifecycle plugin couldn't be written to ~/.config/opencode/plugins/ (check that directory's permissions), so it was skipped."
         case .noOpenCode:
-            return "No ~/.config/opencode found, so OpenCode's lifecycle plugin was skipped. Start OpenCode once, then run this again."
+            return "No ~/.config/opencode found, so OpenCode's lifecycle plugin was skipped. "
+                + "Coarse shell detection for opencode is off by default — status comes from the lifecycle plugin "
+                + "once ~/.config/opencode exists. Start OpenCode once, then run this again."
         }
     }
 
