@@ -161,12 +161,16 @@ paths:
   (OpenCode's legacy loader treats every export as a plugin and rejects non-functions).
   OpenCode `session.status` `busy`/`retry` send `active --blink`
   and remember the sessionID;
-  `idle` sends `completed --auto-reset` only for a sessionID that previously
-  saw busy/retry (a subagent idle must not paint completed onto a busy parent).
-  `permission.asked`/`question.asked`/`session.error` send `blocked`;
-  `session.error` also latches the sessionID so the following
-  `session.status(idle)` that halt always publishes is swallowed
+  `idle` clears that id and sends `completed --auto-reset` only when the
+  active set is empty (a task subagent's busy/idle must not paint completed
+  onto a still-busy parent or sibling session).
+  `permission.asked`/`question.asked` send `blocked`.
+  For a session already reported busy, a turn-ending `session.error` sends
+  `blocked` and latches the sessionID so the following `session.status(idle)`
+  that halt always publishes is swallowed
   (otherwise the serial report queue would overwrite blocked with completed).
+  Abort (`MessageAbortedError`) and auto-compaction (`ContextOverflowError`)
+  are not latched, so Esc ends on completed and compaction does not flash blocked.
   `permission.replied`/`question.replied`/`question.rejected` send `active --blink`
   so a blocked glyph clears when the user answers.
   Deprecated `session.idle` is ignored so it does not double-fire with

@@ -2036,10 +2036,12 @@
               >
               → active,
               <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">idle</span> → completed
-              (only for a session that previously saw busy/retry),
-              permission/question prompts and
-              <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">session.error</span> → blocked
-              (and the following idle from halt is swallowed so blocked is not overwritten),
+              (only when no session remains busy, so a task subagent cannot complete a busy parent),
+              permission/question prompts → blocked,
+              turn-ending
+              <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">session.error</span>
+              for a session already reported busy → blocked
+              (following idle from halt swallowed; abort and compaction overflow ignored),
               reply/reject → active.
               Deprecated
               <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">session.idle</span>

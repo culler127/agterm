@@ -14,8 +14,21 @@ const ACTIVE = ["active", "--blink"];
 const BLOCKED = ["blocked"];
 const COMPLETED = ["completed", "--auto-reset"];
 
+/** Errors that do not end the turn — do not latch blocked / swallow the following idle. */
+const TRANSIENT_ERROR_NAMES = new Set([
+  // Esc / interrupt: halt(DOMException AbortError) is parsed to MessageAbortedError; either may appear.
+  "MessageAbortedError",
+  "AbortError",
+  // Auto-compaction: publishes session.error and returns with no following idle (processor.ts).
+  "ContextOverflowError",
+]);
+
 function defaultWrapperPath() {
   return join(homedir(), ".config", "agterm", "agent-status", "agterm-agent-status.sh");
+}
+
+function errorName(error) {
+  return typeof error?.name === "string" ? error.name : undefined;
 }
 
 /**
@@ -34,16 +47,31 @@ function createReportQueue(reportFn) {
 }
 
 function spawnReport(wrapper, args) {
-  // Wait for the child to exit. Do not time out the wait: resolving early lets the queue start the
-  // next report while this wrapper (or agtermctl) is still running, which reorders status under load.
-  // A missing wrapper hits 'error' immediately; a healthy status spawn is fast.
+  // Bound wait with real process-group cancellation (detached + kill(-pid)), not the old 1s
+  // abandonment that reordered reports under load while leaving agtermctl running.
   return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve();
+    };
     const child = spawn(wrapper, args, {
       stdio: "ignore",
       env: process.env,
+      detached: true,
     });
-    child.on("error", () => resolve());
-    child.on("close", () => resolve());
+    child.on("error", finish);
+    child.on("close", finish);
+    const timer = setTimeout(() => {
+      try {
+        if (child.pid != null) process.kill(-child.pid, "SIGTERM");
+      } catch {
+        /* already gone */
+      }
+      finish();
+    }, 10_000);
   });
 }
 
@@ -52,10 +80,12 @@ function spawnReport(wrapper, args) {
  * This must remain the only export from this file.
  *
  * Keeps two Sets (same shape as OpenCode's own status notifications plugin):
- * - `active`: sessionIDs that have seen busy/retry — idle is ignored until then, so a subagent's
- *   idle cannot paint completed onto a still-working parent pane.
- * - `errored`: sessionIDs that hit session.error — the following session.status(idle) that
- *   SessionProcessor.halt always publishes is swallowed so blocked is not overwritten by completed.
+ * - `active`: sessionIDs that have seen busy/retry. Idle for one id is ignored until that id was
+ *   busy; COMPLETED fires only when the set is empty after removing the id, so a task subagent's
+ *   busy/idle pair cannot paint completed onto a still-busy parent (or another top-level session).
+ * - `errored`: sessionIDs that hit a turn-ending session.error — the following session.status(idle)
+ *   that SessionProcessor.halt publishes is swallowed so blocked is not overwritten by completed.
+ *   Abort and ContextOverflowError are not latched (Esc / compaction must not stick on blocked).
  */
 export const AgtermStatusPlugin = async () => {
   if (!process.env.AGTERM_SESSION_ID) {
@@ -89,14 +119,14 @@ export const AgtermStatusPlugin = async () => {
             }
             return ACTIVE;
           case "idle":
-            // Ignore idle with no preceding busy/retry for this sessionID (covers subagent idle and
-            // an idle published with no matching busy).
             if (!sessionID || !active.has(sessionID)) return null;
             active.delete(sessionID);
             if (errored.has(sessionID)) {
               errored.delete(sessionID);
               return null;
             }
+            // Set-wide gate: another session (parent or sibling) still busy → stay active.
+            if (active.size > 0) return null;
             return COMPLETED;
           default:
             return null;
@@ -105,11 +135,14 @@ export const AgtermStatusPlugin = async () => {
       case "permission.asked":
       case "question.asked":
         return BLOCKED;
-      case "session.error":
-        // Latch only for a session we have seen busy; halt always follows with status(idle).
+      case "session.error": {
+        // Only for a session already reported busy (sessionID is optional on some publishers).
         if (!sessionID || !active.has(sessionID)) return null;
+        const name = errorName(properties.error);
+        if (name && TRANSIENT_ERROR_NAMES.has(name)) return null;
         errored.add(sessionID);
         return BLOCKED;
+      }
       // Clear blocked after the user answers; session.status(busy) may lag behind the reply.
       case "permission.replied":
       case "question.replied":

@@ -1,12 +1,18 @@
 import Foundation
 import Testing
 
-/// Resolves `node` for OpenCodeStatusHookTests. Kept outside the suite type so `@Suite(.enabled(if:))`
-/// can reference it without a circular macro resolution on the suite itself.
+/// Resolves a qualifying `node` for OpenCodeStatusHookTests. Kept outside the suite type so
+/// `@Suite(.enabled(if:))` can reference it without a circular macro resolution on the suite itself.
 private enum OpenCodeStatusHookSupport {
-    /// First `node` on PATH, or nil. Suite-gated via `.enabled(if:)` so machines without Node skip
-    /// visibly rather than failing (README lists Node only as a test dependency).
+    /// First `node` on PATH that meets the module-syntax-detection floor (≥ 20.19 or ≥ 22.7), or nil.
+    /// Suite-gated via `.enabled(if:)` so older/missing Node skips visibly rather than failing the
+    /// import of the plugin's bare `.js` (no package.json above it).
     static var node: String? {
+        guard let path = whichNode(), nodeVersionMeetsFloor(at: path) else { return nil }
+        return path
+    }
+
+    private static func whichNode() -> String? {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         proc.arguments = ["which", "node"]
@@ -24,14 +30,42 @@ private enum OpenCodeStatusHookSupport {
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return path.isEmpty ? nil : path
     }
+
+    /// Module-syntax detection for unflagged `.js` ESM landed in Node 20.19 / 22.7; 21.x and older
+    /// 20/22 lines fail the plugin import instead of skipping.
+    private static func nodeVersionMeetsFloor(at path: String) -> Bool {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: path)
+        proc.arguments = ["--version"]
+        let out = Pipe()
+        proc.standardOutput = out
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+        } catch {
+            return false
+        }
+        guard proc.terminationStatus == 0 else { return false }
+        let raw = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let trimmed = raw.hasPrefix("v") ? String(raw.dropFirst()) : raw
+        let parts = trimmed.split(separator: ".").prefix(2).compactMap { Int($0) }
+        guard parts.count == 2 else { return false }
+        let (major, minor) = (parts[0], parts[1])
+        if major > 22 { return true }
+        if major == 22 { return minor >= 7 }
+        if major == 20 { return minor >= 19 }
+        return false
+    }
 }
 
 // Exercises the OpenCode plugin shipped by the Help-menu installer. Event-to-status mapping and
 // wrapper spawning belong to this installed plugin, not to agterm's runtime status engine.
 // Drives the plugin through Node (same host OpenCode uses) with AGTERM_STATUS_WRAPPER recording argv.
-// Skipped when node is absent — the app does not require Node at runtime; only these tests do.
+// Skipped when node is absent or below the module-syntax floor — the app does not need Node at runtime.
 @Suite(.enabled(if: OpenCodeStatusHookSupport.node != nil,
-                "node is required to exercise the OpenCode status plugin; install Node.js to run these tests"))
+                "Node.js ≥ 20.19 or ≥ 22.7 is required to exercise the OpenCode status plugin"))
 struct OpenCodeStatusHookTests {
     private static var plugin: String {
         URL(fileURLWithPath: #filePath)
@@ -205,10 +239,40 @@ struct OpenCodeStatusHookTests {
         // errored latch the serial queue would overwrite blocked with completed --auto-reset.
         let calls = try runEvents([
             status("busy"),
-            event("session.error", properties: ["sessionID": "ses_root"]),
+            event("session.error", properties: [
+                "sessionID": "ses_root",
+                "error": ["name": "ProviderError"],
+            ]),
             status("idle"),
         ])
         #expect(calls == ["active --blink", "blocked"])
+    }
+
+    @Test func abortErrorDoesNotLatchBlocked() throws {
+        // Esc → halt(AbortError) → MessageAbortedError + idle. Must end on completed --auto-reset
+        // (self-clears on visit), not stuck blocked ahead of clearedByKeystroke.
+        let calls = try runEvents([
+            status("busy"),
+            event("session.error", properties: [
+                "sessionID": "ses_root",
+                "error": ["name": "MessageAbortedError"],
+            ]),
+            status("idle"),
+        ])
+        #expect(calls == ["active --blink", "completed --auto-reset"])
+    }
+
+    @Test func contextOverflowErrorDoesNotPaintBlocked() throws {
+        // Auto-compaction publishes ContextOverflowError with no following idle; busy resumes after.
+        let calls = try runEvents([
+            status("busy"),
+            event("session.error", properties: [
+                "sessionID": "ses_root",
+                "error": ["name": "ContextOverflowError"],
+            ]),
+            status("busy"),
+        ])
+        #expect(calls == ["active --blink", "active --blink"])
     }
 
     @Test func idleWithoutPrecedingBusyIsIgnored() throws {
@@ -220,13 +284,30 @@ struct OpenCodeStatusHookTests {
     }
 
     @Test func subagentIdleDoesNotCompleteWhileParentIsActive() throws {
-        // needsAttention would otherwise pull the still-working parent into attention nav / auto-follow.
+        // Task tool creates a child session with its own busy/idle; parent stays busy until the tool
+        // returns. COMPLETED must wait until the active set is empty (set-wide gate).
         let calls = try runEvents([
             status("busy", sessionID: "ses_parent"),
+            status("busy", sessionID: "ses_child"),
             status("idle", sessionID: "ses_child"),
             status("idle", sessionID: "ses_parent"),
         ])
         #expect(calls == [
+            "active --blink",
+            "active --blink",
+            "completed --auto-reset",
+        ])
+    }
+
+    @Test func interleavedTopLevelSessionsCompleteOnlyWhenAllIdle() throws {
+        let calls = try runEvents([
+            status("busy", sessionID: "ses_a"),
+            status("busy", sessionID: "ses_b"),
+            status("idle", sessionID: "ses_a"),
+            status("idle", sessionID: "ses_b"),
+        ])
+        #expect(calls == [
+            "active --blink",
             "active --blink",
             "completed --auto-reset",
         ])
