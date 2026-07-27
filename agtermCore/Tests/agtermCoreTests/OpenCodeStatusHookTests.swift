@@ -65,7 +65,7 @@ private enum OpenCodeStatusHookSupport {
 // Drives the plugin through Node (same host OpenCode uses) with AGTERM_STATUS_WRAPPER recording argv.
 // Skipped when node is absent or below the module-syntax floor — the app does not need Node at runtime.
 @Suite(.enabled(if: OpenCodeStatusHookSupport.node != nil,
-                "Node.js ≥ 20.19 or ≥ 22.7 is required to exercise the OpenCode status plugin"))
+                "Node.js 22.7+ (or 20.19+ on the 20.x line) is required to exercise the OpenCode status plugin"))
 struct OpenCodeStatusHookTests {
     private static var plugin: String {
         URL(fileURLWithPath: #filePath)
@@ -262,8 +262,9 @@ struct OpenCodeStatusHookTests {
         #expect(calls == ["active --blink", "completed --auto-reset"])
     }
 
-    @Test func contextOverflowErrorDoesNotPaintBlocked() throws {
-        // Auto-compaction publishes ContextOverflowError with no following idle; busy resumes after.
+    @Test func contextOverflowFollowedByBusyDoesNotPaintBlocked() throws {
+        // Auto-compaction publishes ContextOverflowError and then resumes the loop, so the next event
+        // is busy — the overflow was a hiccup, not a failed turn, and must not flash blocked.
         let calls = try runEvents([
             status("busy"),
             event("session.error", properties: [
@@ -271,8 +272,23 @@ struct OpenCodeStatusHookTests {
                 "error": ["name": "ContextOverflowError"],
             ]),
             status("busy"),
+            status("idle"),
         ])
-        #expect(calls == ["active --blink", "active --blink"])
+        #expect(calls == ["active --blink", "active --blink", "completed --auto-reset"])
+    }
+
+    @Test func contextOverflowFollowedByIdleReportsBlocked() throws {
+        // With compaction disabled (or once it gives up) halt publishes the same error and then idle:
+        // the turn really ended in failure, so this must land on blocked rather than completed.
+        let calls = try runEvents([
+            status("busy"),
+            event("session.error", properties: [
+                "sessionID": "ses_root",
+                "error": ["name": "ContextOverflowError"],
+            ]),
+            status("idle"),
+        ])
+        #expect(calls == ["active --blink", "blocked"])
     }
 
     @Test func idleWithoutPrecedingBusyIsIgnored() throws {
@@ -285,29 +301,75 @@ struct OpenCodeStatusHookTests {
 
     @Test func subagentIdleDoesNotCompleteWhileParentIsActive() throws {
         // Task tool creates a child session with its own busy/idle; parent stays busy until the tool
-        // returns. COMPLETED must wait until the active set is empty (set-wide gate).
+        // returns. COMPLETED must wait until the active set is empty (set-wide gate). The permission
+        // between the two idles is the oracle: a gate that completed on the child's idle would place
+        // completed BEFORE blocked instead of after it.
         let calls = try runEvents([
             status("busy", sessionID: "ses_parent"),
             status("busy", sessionID: "ses_child"),
             status("idle", sessionID: "ses_child"),
+            event("permission.asked", properties: ["sessionID": "ses_parent"]),
             status("idle", sessionID: "ses_parent"),
         ])
         #expect(calls == [
+            "active --blink",
+            "active --blink",
+            "blocked",
+            "completed --auto-reset",
+        ])
+    }
+
+    @Test func interleavedTopLevelSessionsCompleteOnlyWhenAllIdle() throws {
+        // Different interleaving: ses_a idles, then goes busy again while ses_b is still running, so
+        // the set empties only on the very last idle.
+        let calls = try runEvents([
+            status("busy", sessionID: "ses_a"),
+            status("busy", sessionID: "ses_b"),
+            status("idle", sessionID: "ses_a"),
+            status("busy", sessionID: "ses_a"),
+            status("idle", sessionID: "ses_b"),
+            status("idle", sessionID: "ses_a"),
+        ])
+        #expect(calls == [
+            "active --blink",
             "active --blink",
             "active --blink",
             "completed --auto-reset",
         ])
     }
 
-    @Test func interleavedTopLevelSessionsCompleteOnlyWhenAllIdle() throws {
+    @Test func siblingIdleDoesNotCompleteOverAnotherSessionsError() throws {
+        // halt() publishes session.error and then that session's own idle, while a sibling is still
+        // running. The error latch must outlive the swallowed idle, or the sibling's idle finds an
+        // empty active set and paints completed over the blocked.
         let calls = try runEvents([
             status("busy", sessionID: "ses_a"),
             status("busy", sessionID: "ses_b"),
+            event("session.error", properties: [
+                "sessionID": "ses_a",
+                "error": ["name": "ProviderAuthError"],
+            ]),
             status("idle", sessionID: "ses_a"),
             status("idle", sessionID: "ses_b"),
         ])
+        #expect(calls == ["active --blink", "active --blink", "blocked"])
+    }
+
+    @Test func turnAfterAnErrorCompletesNormally() throws {
+        // The set-wide latch must not leak into the next turn.
+        let calls = try runEvents([
+            status("busy"),
+            event("session.error", properties: [
+                "sessionID": "ses_root",
+                "error": ["name": "ProviderAuthError"],
+            ]),
+            status("idle"),
+            status("busy"),
+            status("idle"),
+        ])
         #expect(calls == [
             "active --blink",
+            "blocked",
             "active --blink",
             "completed --auto-reset",
         ])

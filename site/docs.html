@@ -2041,7 +2041,9 @@
               turn-ending
               <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">session.error</span>
               for a session already reported busy → blocked
-              (following idle from halt swallowed; abort and compaction overflow ignored),
+              (following idle from halt swallowed, and a clean sibling's idle cannot erase it; abort
+              ignored, context overflow decided by the next event — busy means compaction resumed,
+              idle means the turn ended → blocked),
               reply/reject → active.
               Deprecated
               <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">session.idle</span>

@@ -169,8 +169,16 @@ paths:
   `blocked` and latches the sessionID so the following `session.status(idle)`
   that halt always publishes is swallowed
   (otherwise the serial report queue would overwrite blocked with completed).
-  Abort (`MessageAbortedError`) and auto-compaction (`ContextOverflowError`)
-  are not latched, so Esc ends on completed and compaction does not flash blocked.
+  The latch is set-wide, not per-id: the errored id STAYS latched through its own swallowed idle,
+  and a later sibling idle that finds the active set empty clears the latch and reports NOTHING
+  instead of `completed` —
+  every session of one OpenCode instance drives the SAME agterm pane, so a sibling finishing
+  cleanly must not erase a failed turn's blocked.
+  Abort (`MessageAbortedError`) is skipped unconditionally, so Esc ends on completed.
+  `ContextOverflowError` is ambiguous at error time and is instead recorded by id and reported as
+  nothing: a following `busy` means auto-compaction resumed (no blocked flash),
+  while a following `idle` means the turn actually ended (compaction disabled or given up) and sends
+  `blocked`.
   `permission.replied`/`question.replied`/`question.rejected` send `active --blink`
   so a blocked glyph clears when the user answers.
   Deprecated `session.idle` is ignored so it does not double-fire with

@@ -14,14 +14,19 @@ const ACTIVE = ["active", "--blink"];
 const BLOCKED = ["blocked"];
 const COMPLETED = ["completed", "--auto-reset"];
 
-/** Errors that do not end the turn — do not latch blocked / swallow the following idle. */
-const TRANSIENT_ERROR_NAMES = new Set([
-  // Esc / interrupt: halt(DOMException AbortError) is parsed to MessageAbortedError; either may appear.
-  "MessageAbortedError",
-  "AbortError",
-  // Auto-compaction: publishes session.error and returns with no following idle (processor.ts).
-  "ContextOverflowError",
-]);
+/**
+ * Interrupts, never a failed turn: Esc routes through halt(DOMException AbortError), which is parsed
+ * to MessageAbortedError — either name may surface. Reported as nothing, so the turn ends on the
+ * following idle's completed --auto-reset, which self-clears on visit.
+ */
+const ABORT_ERROR_NAMES = new Set(["MessageAbortedError", "AbortError"]);
+
+/**
+ * Context overflow is ambiguous at error time: with auto-compaction on, the loop resumes and the next
+ * event is busy; with compaction off (or once it gives up) the turn really ends and the next event is
+ * idle. Decided on that following event instead of by name — see the `overflow` Set below.
+ */
+const OVERFLOW_ERROR_NAME = "ContextOverflowError";
 
 function defaultWrapperPath() {
   return join(homedir(), ".config", "agterm", "agent-status", "agterm-agent-status.sh");
@@ -79,13 +84,18 @@ function spawnReport(wrapper, args) {
  * OpenCode plugin entry. Named export — OpenCode loads plugins from ~/.config/opencode/plugins/.
  * This must remain the only export from this file.
  *
- * Keeps two Sets (same shape as OpenCode's own status notifications plugin):
+ * Every session of one OpenCode instance reports into the SAME agterm pane, so the three Sets below
+ * track them together rather than per-session:
  * - `active`: sessionIDs that have seen busy/retry. Idle for one id is ignored until that id was
  *   busy; COMPLETED fires only when the set is empty after removing the id, so a task subagent's
  *   busy/idle pair cannot paint completed onto a still-busy parent (or another top-level session).
- * - `errored`: sessionIDs that hit a turn-ending session.error — the following session.status(idle)
- *   that SessionProcessor.halt publishes is swallowed so blocked is not overwritten by completed.
- *   Abort and ContextOverflowError are not latched (Esc / compaction must not stick on blocked).
+ * - `errored`: sessionIDs that hit a turn-ending session.error. Their own following idle (the one
+ *   SessionProcessor.halt publishes right after) is swallowed and the id stays latched, so a SIBLING
+ *   idling later cannot report completed over the blocked either. Cleared on the next busy/retry, or
+ *   set-wide once everything is idle.
+ * - `overflow`: sessionIDs that hit ContextOverflowError, whose meaning is only known from the next
+ *   event — busy means auto-compaction resumed (no blocked), idle means the turn ended (blocked).
+ * Abort/interrupt is never latched, so Esc ends on completed --auto-reset, which self-clears.
  */
 export const AgtermStatusPlugin = async () => {
   if (!process.env.AGTERM_SESSION_ID) {
@@ -96,6 +106,7 @@ export const AgtermStatusPlugin = async () => {
   const enqueue = createReportQueue((args) => spawnReport(wrapper, args));
   const active = new Set();
   const errored = new Set();
+  const overflow = new Set();
 
   function mapEventToArgs(event) {
     const type = event?.type;
@@ -116,17 +127,30 @@ export const AgtermStatusPlugin = async () => {
             if (sessionID) {
               active.add(sessionID);
               errored.delete(sessionID);
+              // Work resumed, so the earlier overflow was auto-compaction, not a failed turn.
+              overflow.delete(sessionID);
             }
             return ACTIVE;
           case "idle":
             if (!sessionID || !active.has(sessionID)) return null;
             active.delete(sessionID);
-            if (errored.has(sessionID)) {
-              errored.delete(sessionID);
-              return null;
+            if (overflow.has(sessionID)) {
+              // Overflow with no resuming busy: the turn ended on it. Latch like any turn-ending error
+              // so a sibling's idle cannot report completed over this blocked.
+              overflow.delete(sessionID);
+              errored.add(sessionID);
+              return BLOCKED;
             }
+            // Swallow the idle halt publishes right after the error, but KEEP the id latched: COMPLETED
+            // is decided set-wide below, so a sibling idling later must still see that a turn failed.
+            if (errored.has(sessionID)) return null;
             // Set-wide gate: another session (parent or sibling) still busy → stay active.
             if (active.size > 0) return null;
+            // Everything idle, but some session ended in failure — leave its blocked standing.
+            if (errored.size > 0) {
+              errored.clear();
+              return null;
+            }
             return COMPLETED;
           default:
             return null;
@@ -139,7 +163,12 @@ export const AgtermStatusPlugin = async () => {
         // Only for a session already reported busy (sessionID is optional on some publishers).
         if (!sessionID || !active.has(sessionID)) return null;
         const name = errorName(properties.error);
-        if (name && TRANSIENT_ERROR_NAMES.has(name)) return null;
+        if (name && ABORT_ERROR_NAMES.has(name)) return null;
+        if (name === OVERFLOW_ERROR_NAME) {
+          // Report nothing yet — the following busy (compaction resumed) or idle (turn ended) decides.
+          overflow.add(sessionID);
+          return null;
+        }
         errored.add(sessionID);
         return BLOCKED;
       }
