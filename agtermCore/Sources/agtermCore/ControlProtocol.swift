@@ -20,6 +20,7 @@ public enum Command: String, Codable, Sendable {
     case sessionMove = "session.move"
     case workspaceMove = "workspace.move"
     case workspaceFocus = "workspace.focus"
+    case workspaceFilter = "workspace.filter"
     case workspaceCollapse = "workspace.collapse"
     case workspaceExpand = "workspace.expand"
     case sessionType = "session.type"
@@ -66,6 +67,7 @@ public enum Command: String, Codable, Sendable {
     case windowFullscreen = "window.fullscreen"
     case windowMinimize = "window.minimize"
     case keymapReload = "keymap.reload"
+    case keymapList = "keymap.list"
     case configReload = "config.reload"
     case themeSet = "theme.set"
     case themeList = "theme.list"
@@ -123,7 +125,8 @@ public struct ControlArgs: Codable, Sendable, Equatable {
     /// Mode for `session.split` / `quick` / `surface.zoom` (`on|off|toggle`,
     /// `show|hide|toggle` for quick/surface zoom),
     /// `session.flag` (`on|off|toggle|clear`), `sidebar.mode` (`tree|flagged|toggle`),
-    /// `workspace.focus` (`on|off|toggle`), `window.minimize` (`on|off|toggle`),
+    /// `workspace.focus` (`on|off|toggle|add`), `workspace.filter` (`on|off|toggle`),
+    /// `window.minimize` (`on|off|toggle`),
     /// `session.background` (`image|text|color|clear`), and
     /// `session.restore` (`set|none|clear` — pin `command`, pin nothing, or drop the pin).
     public var mode: String?
@@ -509,10 +512,24 @@ public struct ControlWorkspaceNode: Codable, Sendable, Equatable {
     public let id: String
     public let name: String
     public let active: Bool
-    /// Whether this workspace is the one the sidebar tree is FOCUSED (collapsed) to, or nil when it is not
-    /// the focused one / no workspace is focused (omitted from the JSON). Distinct from `active` (the
-    /// SELECTED workspace): focus collapses the sidebar to a single workspace. The read side of the
-    /// write-only `workspace.focus` — so a script can record which workspace is focused and restore it.
+    /// Whether this workspace is a MEMBER of the sidebar's focus set, or nil when it is not (omitted from
+    /// the JSON). Membership is reported INDEPENDENTLY of whether the filter is currently applied, so a
+    /// script can read a marked-but-not-filtering set back; the flag itself is the tree top-level
+    /// `workspaceFilter`. Distinct from `active` (the SELECTED workspace). The read side of the write-only
+    /// `workspace.focus`/`workspace.filter` — so a script can record the working set and restore it.
+    ///
+    /// A workspace ROW is VISIBLE in the sidebar iff
+    /// `tree.sidebarVisible && tree.sidebarMode == "tree" && (!tree.workspaceFilter || focused)` — every
+    /// term is on the same `tree` response, so a script evaluates it without a second call. The states,
+    /// enumerated: `sidebarVisible == false` renders no sidebar at all; `sidebarMode == "flagged"` renders
+    /// a FLAT flagged-session list with NO workspace rows, whatever the filter and the membership say;
+    /// `"tree"` with the filter OFF renders EVERY workspace regardless of membership; `"tree"` with the
+    /// filter ON renders only the members. Neither shorter form works: `focused && workspaceFilter`
+    /// reports nothing visible whenever the filter is off, and `!workspaceFilter || focused` alone reports
+    /// rows in flagged mode and behind a hidden sidebar, where no workspace row renders at all. The
+    /// filter-ON term is exact rather than approximate, because `workspaceFilter == true` with an empty
+    /// member set is unrepresentable (enabling an empty set is refused, and restore prunes stale ids then
+    /// disables when the set comes back empty), so an applied filter always has at least one visible member.
     public let focused: Bool?
     /// Whether this workspace is COLLAPSED in the sidebar tree (`true`), or nil when expanded — the
     /// default — so an all-expanded tree omits the field (matching the persisted `WorkspaceSnapshot.collapsed`).
@@ -558,6 +575,17 @@ public struct ControlTree: Codable, Sendable, Equatable {
     /// mode and restore it. `tree`-only (not on `window.list`), since a GUI-only flagged-view toggle would
     /// leave a cached copy stale — read the live tree copy instead.
     public let sidebarMode: String?
+    /// Whether the projected window's workspace focus FILTER is currently applied — the flag half of the
+    /// focus set, whose member half is each workspace node's `focused`. It is one term of the row-visibility
+    /// predicate, not the whole of it: a workspace row renders iff
+    /// `sidebarVisible && sidebarMode == "tree" && (!workspaceFilter || focused)` — see `focused` for the
+    /// enumerated states, including `flagged` mode, where no workspace row renders whatever this says.
+    /// LIVE and `tree`-only (not on `window.list`), like `sidebarMode`:
+    /// the bottom-bar toggle and the row menu flip it without going through the command path, so a cached
+    /// copy would go stale — read the live tree copy instead. The read side of the write-only
+    /// `workspace.filter` command, so a script can record the filter state and restore it, or make the
+    /// toggle idempotent. nil in a host-produced tree that does not project a window.
+    public let workspaceFilter: Bool?
     /// Whether the projected window's quick terminal is currently visible. LIVE — resolved app-side per
     /// request from the window's `QuickTerminalController` — so a script can make the `quick` toggle
     /// idempotent (show only when hidden). The read side of the write-only `quick` command. `tree`-only
@@ -595,7 +623,8 @@ public struct ControlTree: Codable, Sendable, Equatable {
     public let dashboardFontMode: String?
 
     public init(workspaces: [ControlWorkspaceNode], idleMs: Int? = nil, autoFollowMs: Int? = nil,
-                sidebarVisible: Bool? = nil, sidebarMode: String? = nil, quickVisible: Bool? = nil,
+                sidebarVisible: Bool? = nil, sidebarMode: String? = nil, workspaceFilter: Bool? = nil,
+                quickVisible: Bool? = nil,
                 zoomedSurface: String? = nil, dashboardMembers: [String]? = nil,
                 dashboardHighlighted: String? = nil, dashboardFontSize: Double? = nil,
                 dashboardFontMode: String? = nil) {
@@ -604,6 +633,7 @@ public struct ControlTree: Codable, Sendable, Equatable {
         self.autoFollowMs = autoFollowMs
         self.sidebarVisible = sidebarVisible
         self.sidebarMode = sidebarMode
+        self.workspaceFilter = workspaceFilter
         self.quickVisible = quickVisible
         self.zoomedSurface = zoomedSurface
         self.dashboardMembers = dashboardMembers
@@ -720,13 +750,15 @@ public struct ControlResult: Codable, Sendable, Equatable {
     public var dark: String?
     /// A page from the app-run event ring, present for `events.read` success and cursor errors.
     public var events: ControlEventBatch?
+    /// The resolved keymap plus the live menu key equivalents, for `keymap.list`.
+    public var keymap: ControlKeymap?
 
     public init(id: String? = nil, tree: ControlTree? = nil, text: String? = nil,
                 windows: [ControlWindowNode]? = nil, exitCode: Int? = nil, count: Int? = nil,
                 affected: Int? = nil,
                 theme: String? = nil, themes: [String]? = nil, ratio: Double? = nil,
                 sync: Bool? = nil, light: String? = nil, dark: String? = nil,
-                events: ControlEventBatch? = nil) {
+                events: ControlEventBatch? = nil, keymap: ControlKeymap? = nil) {
         self.id = id
         self.tree = tree
         self.text = text
@@ -741,6 +773,7 @@ public struct ControlResult: Codable, Sendable, Equatable {
         self.light = light
         self.dark = dark
         self.events = events
+        self.keymap = keymap
     }
 }
 

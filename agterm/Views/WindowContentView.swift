@@ -407,7 +407,7 @@ struct WindowContentView: View {
                                              isActive: deckInteractive && isActive && !session.splitFocused && !overlaid,
                                              deckVisible: visible)
                                     .overlay { paneDim(session.splitFocused) }
-                                    .id(session.id)
+                                    .id(primarySurfaceID(session))
                             } else {
                                 Color.clear
                                     .id("\(session.id.uuidString)-primary-placeholder")
@@ -448,7 +448,7 @@ struct WindowContentView: View {
                     if deckHostsSurface(session: session, surface: .primary) {
                         TerminalView(session: session, surfaceKeyPath: \.surface, makeSurface: makeSurface,
                                      isActive: deckInteractive && isActive && !overlaid, deckVisible: visible)
-                            .id(session.id)
+                            .id(primarySurfaceID(session))
                     } else {
                         Color.clear
                             .id("\(session.id.uuidString)-primary-placeholder")
@@ -585,6 +585,14 @@ struct WindowContentView: View {
             .padding(.top, 8)
             .padding(.trailing, 8)
         }
+    }
+
+    /// Keeps a primary host stable through lazy surface creation and ordinary updates, but remounts it
+    /// when one live surface replaces another (split-survivor promotion). `TerminalView.updateNSView`
+    /// cannot replace the AppKit view that `makeNSView` returned, so session identity alone would keep
+    /// hosting the torn-down prior primary.
+    func primarySurfaceID(_ session: Session) -> String {
+        "\(session.id.uuidString)-primary-\(session.primarySurfaceHostRevision)"
     }
 
     /// Mutes the inactive split pane's TEXT so the active pane stands out, WITHOUT darkening the
@@ -738,8 +746,10 @@ struct WindowContentView: View {
         }
     }
 
-    /// Two distinct add controls, source-list style: add a workspace, and a menu
-    /// to add a session to the current workspace (default cwd) or a picked directory.
+    /// The sidebar footer, source-list style: two add controls on the left — add a workspace, and a menu
+    /// to add a session to the current workspace (default cwd) or a picked directory — and two view
+    /// toggles on the right, the workspace focus filter and the flagged working-set view. Each of the four
+    /// is individually hideable via Settings ▸ Interface (`shows(_:)`).
     private var bottomBar: some View {
         HStack(spacing: 2) {
             if shows(.newWorkspace) {
@@ -776,27 +786,29 @@ struct WindowContentView: View {
 
             Spacer()
 
-            // an escape hatch shown only while a workspace is focused: names the focused workspace and
-            // unfocuses on its ✕ (the primary affordance; the menu/palette "Clear Focus" mirror it).
-            if let focused = store.focusedWorkspace {
+            // apply or suspend the marked-workspace filter WITHOUT losing the set, so peeking at the whole
+            // tree costs one click each way. 2-state glyph (filled while the filter applies); it is both
+            // the indicator and the control for the filter state.
+            if shows(.focusFilter) {
                 Button {
-                    actions.clearFocus()
+                    actions.toggleFocusFilter()
                 } label: {
-                    HStack(spacing: 4) {
-                        Text(focused.name)
-                            .lineLimit(1)
-                        Image(systemName: "xmark")
-                    }
-                    .font(.caption)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(chromeText.opacity(0.15)))
-                    .contentShape(Capsule())
+                    Image(systemName: store.focusEnabled ? "square.grid.2x2.fill" : "square.grid.2x2")
+                        .frame(width: 24, height: 22)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.borderless)
-                .help("Clear focus")
-                .accessibilityLabel("Clear focus")
-                .accessibilityIdentifier("focus-pill")
+                // nothing marked means nothing to filter to, and the store refuses to enable an empty set
+                // anyway. The explicit chromeText foregroundStyle defeats SwiftUI's default disabled
+                // dimming, so mute it by hand — the flagged toggle's rule.
+                .disabled(store.focusedWorkspaceIDs.isEmpty)
+                .opacity(store.focusedWorkspaceIDs.isEmpty ? 0.35 : 1)
+                .help(helpHint(store.focusEnabled ? "Show all workspaces" : "Show only focused workspaces",
+                               .toggleWorkspaceFilter))
+                .accessibilityLabel("Toggle Workspace Filter")
+                // the only accessibility-observable read of the filter state now that the pill is gone.
+                .accessibilityValue(store.focusEnabled ? "on" : "off")
+                .accessibilityIdentifier("focus-filter-toggle")
             }
 
             // flip the sidebar between the workspace tree and the flat flagged working-set list. 2-state

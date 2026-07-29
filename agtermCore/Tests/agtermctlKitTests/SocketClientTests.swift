@@ -107,6 +107,80 @@ struct SocketClientTests {
     }
 
     /// A create command's `run()` returns without throwing on `{"ok":true}` and prints the new id.
+    @Test func formatsKeymapWithEveryActionAndTheLiveMenu() {
+        let keymap = Keymap(builtinOverrides: [.closeSession: Chord(mods: [.command], key: "e")], commands: [])
+        let payload = ControlKeymap.project(
+            keymap: keymap, diagnostics: [KeymapDiagnostic(line: 3, message: "unknown action")],
+            path: "/tmp/keymap.conf",
+            menu: [ControlKeymapMenuItem(menu: "File", title: "Close", chord: "cmd+w", selector: "performClose:")]
+        )
+
+        let out = SocketClient.formatKeymap(payload)
+
+        #expect(out.contains("keymap: /tmp/keymap.conf"))
+        #expect(out.contains("* close_session"), "an overridden action is marked")
+        #expect(out.contains("cmd+e"))
+        #expect(out.contains("line 3: unknown action"))
+        #expect(out.contains("cmd+w  File ▸ Close"), "the live menu chord is listed for comparison")
+        // every action appears, keyless ones included, so the listing is the whole set
+        for action in BuiltinAction.allCases { #expect(out.contains(action.rawValue)) }
+    }
+
+    // line 0 is the whole-file / cross-section sentinel, not a real line. The GUI already drops the
+    // number for it (SettingsView.diagnosticLine), so the CLI must not send a reader hunting for line 0.
+    @Test func formatsKeymapDroppingTheLineNumberForWholeFileDiagnostics() {
+        let payload = ControlKeymap.project(
+            keymap: Keymap(builtinOverrides: [:], commands: []),
+            diagnostics: [KeymapDiagnostic(line: 0, message: "conflicts with a built-in; keybind dropped"),
+                          KeymapDiagnostic(line: 7, message: "unknown action")],
+            path: "/tmp/keymap.conf"
+        )
+
+        let out = SocketClient.formatKeymap(payload)
+
+        #expect(out.contains("    conflicts with a built-in; keybind dropped"))
+        #expect(!out.contains("line 0"), "the sentinel must not be printed as a line number")
+        #expect(out.contains("line 7: unknown action"), "a real line number is still shown")
+    }
+
+    // a disabled item's chord is inert, and the default (non-JSON) output is the documented human
+    // workflow — leaving the flag out of the rendering drops the one fact that explains a dead binding.
+    @Test func formatsKeymapMarkingDisabledMenuItems() {
+        let payload = ControlKeymap.project(
+            keymap: Keymap(builtinOverrides: [:], commands: []), diagnostics: [], path: "/tmp/keymap.conf",
+            menu: [ControlKeymapMenuItem(menu: "Navigate", title: "Focus Left Pane", chord: "cmd+opt+left",
+                                         selector: "menuAction:", enabled: false),
+                   ControlKeymapMenuItem(menu: "File", title: "New Session", chord: "cmd+n",
+                                         selector: "menuAction:")]
+        )
+
+        let out = SocketClient.formatKeymap(payload)
+
+        #expect(out.contains("cmd+opt+left  Navigate ▸ Focus Left Pane  (disabled)"))
+        #expect(out.contains("cmd+n  File ▸ New Session\n") || out.hasSuffix("cmd+n  File ▸ New Session"),
+                "an enabled row carries no marker")
+    }
+
+    @Test func formatsKeymapWithoutOptionalSectionsWhenEmpty() {
+        let payload = ControlKeymap.project(keymap: Keymap(builtinOverrides: [:], commands: []),
+                                            diagnostics: [], path: "/tmp/keymap.conf")
+
+        let out = SocketClient.formatKeymap(payload)
+
+        #expect(!out.contains("commands:"))
+        #expect(!out.contains("diagnostics:"))
+        #expect(!out.contains("menu:"), "menu is omitted, not printed empty, when the caller supplied none")
+        #expect(out.contains("close_session"))
+    }
+
+    @Test func formatResponsePicksTheKeymapRenderer() {
+        let payload = ControlKeymap.project(keymap: Keymap(builtinOverrides: [:], commands: []),
+                                            diagnostics: [], path: "/tmp/keymap.conf")
+        let out = SocketClient.formatResponse(ControlResponse(ok: true, result: ControlResult(keymap: payload)),
+                                              json: false)
+        #expect(out.hasPrefix("keymap: /tmp/keymap.conf"))
+    }
+
     @Test func runEchoesNewIdForCreateCommand() throws {
         let server = StubServer(response: ControlResponse(ok: true, result: ControlResult(id: "9f3c")))
         try server.start()

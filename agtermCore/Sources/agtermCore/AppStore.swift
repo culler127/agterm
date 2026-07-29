@@ -50,13 +50,27 @@ public final class AppStore {
     /// control command via `setSidebarMode(_:)`.
     public var sidebarMode: SidebarMode = .tree
 
-    /// The workspace the sidebar tree is focused (zoomed) on, or nil for the full tree. Per-window UI
-    /// state, persisted in `Snapshot` (restored on relaunch). When set, the tree renders only that
-    /// workspace (see `visibleWorkspaces`); orthogonal to `sidebarMode` (flagged mode ignores focus).
-    /// Flipped by the workspace row menu, the bottom-bar pill, the View menu, the palette, and the
-    /// `workspace.focus` control command via `setFocusedWorkspace(_:)`. Auto-cleared when the focused
-    /// workspace is removed or when a session outside it becomes selected.
-    public var focusedWorkspaceID: UUID?
+    /// The workspaces marked for the sidebar focus filter — the working set the tree renders when
+    /// `focusEnabled` is on (see `visibleWorkspaces`). Per-window UI state, persisted in `Snapshot`
+    /// (restored on relaunch); orthogonal to `sidebarMode` (flagged mode ignores focus). Mutated by the
+    /// workspace row menu, the View menu, the palette, and the `workspace.focus` control command via
+    /// `setFocusedWorkspace(_:)` / `setFocusMembership(_:member:)`. A member is pruned when its
+    /// workspace is removed. Read-only outside the module (`internal(set)`) so the invariant below can
+    /// only be broken from inside `agtermCore`, never by an app-target line writing the field directly.
+    public internal(set) var focusedWorkspaceIDs: Set<UUID> = []
+
+    /// Whether the focus filter applies, so a hand-curated set survives being switched off. Per-window
+    /// UI state, persisted in `Snapshot` (restored on relaunch), and `internal(set)` for the same reason
+    /// as the set above. Enabled with an EMPTY set is unrepresentable, which is what makes the FILTER-ON
+    /// half of the control row-visibility read-back (`ControlWorkspaceNode.focused`) exact: an applied
+    /// filter always has at least one visible member. (The filter-OFF half is `visibleWorkspaces`
+    /// returning the whole tree, which this invariant says nothing about.) Three guards hold it:
+    /// `setFocusEnabled(true)` is a no-op on an empty set (matching the bottom-bar toggle, disabled in
+    /// exactly that state), every mutator disables as the set empties (`setFocusMembership`,
+    /// `dropFocusMember`), and `restoreFocus(from:)` prunes ids absent from the restored tree, disabling
+    /// when the prune empties the set. Driven by the bottom-bar `focus-filter-toggle`, View ▸ Toggle
+    /// Workspace Filter, `BuiltinAction.toggleWorkspaceFilter`, and `workspace.filter`.
+    public internal(set) var focusEnabled = false
 
     /// This window's sidebar width in points. Per-window UI state, persisted in `Snapshot`. Driven by the
     /// sidebar divider drag (clamped to `sidebarWidthMin...sidebarWidthMax`); restored on relaunch.
@@ -234,12 +248,13 @@ public final class AppStore {
             }
             return ControlWorkspaceNode(id: workspace.id.uuidString, name: workspace.name,
                                         active: workspace.id == activeWorkspaceID,
-                                        focused: workspace.id == focusedWorkspaceID ? true : nil,
+                                        focused: focusedWorkspaceIDs.contains(workspace.id) ? true : nil,
                                         collapsed: workspace.isExpanded ? nil : true,
                                         sessions: sessions)
         }
         return ControlTree(workspaces: nodes, idleMs: idleMs(), autoFollowMs: autoFollowMs,
                            sidebarVisible: sidebarVisible, sidebarMode: sidebarMode.rawValue,
+                           workspaceFilter: focusEnabled,
                            quickVisible: quickVisible(), zoomedSurface: zoomedSurface(),
                            dashboardMembers: dashboardMembers(),
                            dashboardHighlighted: dashboardHighlighted(),
@@ -247,18 +262,21 @@ public final class AppStore {
                            dashboardFontMode: dashboardFontMode())
     }
 
-    /// Creates a workspace and appends it. When `clearFocus` (the default) it clears any active focus so
-    /// the new (empty) workspace is immediately visible — else `visibleWorkspaces` returns only the
-    /// focused one and the new workspace is silently hidden (the auto-reveal contract, like `addSession`).
-    /// Pass `clearFocus: false` to keep the current focus — a background `session.new --no-select` create.
+    /// Creates a workspace and appends it. When `revealNewWorkspace` (the default) and the focus filter is
+    /// ON, the new workspace JOINS the marked set so it is immediately visible — else `visibleWorkspaces`
+    /// would render only the existing members and silently hide it (the auto-reveal contract, like
+    /// `addSession`). Widening the set rather than clearing it keeps the rest of the working set filtered;
+    /// the user asked for this workspace, so mutating the set here is intentional.
+    /// Pass `revealNewWorkspace: false` to leave the filter untouched — a background
+    /// `session.new --no-select` create, which must not widen the view.
     /// Pass `collapsed: true` to create it already collapsed in the sidebar (backs `workspace.new --collapsed`):
     /// a runtime add defaults `isExpanded == true` and renders open, so a collapsed workspace can be built
     /// and filled with `addSession(select: false)` without opening.
     @discardableResult
-    public func addWorkspace(name: String, collapsed: Bool = false, clearFocus: Bool = true) -> Workspace {
+    public func addWorkspace(name: String, collapsed: Bool = false, revealNewWorkspace: Bool = true) -> Workspace {
         let workspace = Workspace(name: name, isExpanded: !collapsed)
         workspaces.append(workspace)
-        if clearFocus { focusedWorkspaceID = nil }
+        if revealNewWorkspace { revealNewFocusMember(workspace.id) }
         scheduleTreeChanged()
         save()
         return workspace
@@ -272,12 +290,12 @@ public final class AppStore {
         return workspaces.first { $0.name == needle }
     }
 
-    /// The workspace named `name`, created if none exists (idempotent); `clearFocus` (default true) is
-    /// forwarded to `addWorkspace` on the create path. Nil only when blank. Backs `--workspace-name --create-workspace`.
+    /// The workspace named `name`, created if none exists (idempotent); `revealNewWorkspace` (default true)
+    /// is forwarded to `addWorkspace` on the create path. Nil only when blank. Backs `--workspace-name --create-workspace`.
     @discardableResult
-    public func ensureWorkspace(named name: String, clearFocus: Bool = true) -> Workspace? {
+    public func ensureWorkspace(named name: String, revealNewWorkspace: Bool = true) -> Workspace? {
         guard let needle = name.trimmedOrNil else { return nil }
-        return workspace(named: needle) ?? addWorkspace(name: needle, clearFocus: clearFocus)
+        return workspace(named: needle) ?? addWorkspace(name: needle, revealNewWorkspace: revealNewWorkspace)
     }
 
     /// Creates a session in the given workspace and, when `select` is true (the default), selects it;
@@ -301,7 +319,7 @@ public final class AppStore {
         // a background add (`session.new --no-select`) leaves selection/focus/recency untouched.
         if select {
             selectedSessionID = session.id
-            autoUnfocusIfOutsideFocus(session.id) // a control-driven add into another workspace must reveal it
+            disableFocusIfSelectionOutsideSet(session.id) // a control-driven add into another workspace must reveal it
             recordRecency()
         }
         emitSessionCreated(session, workspace: workspaceID)
@@ -329,26 +347,13 @@ public final class AppStore {
         } else {
             replaceSidebarSelection(with: sessionID)
         }
-        autoUnfocusIfOutsideFocus(sessionID)
+        disableFocusIfSelectionOutsideSet(sessionID)
         if let sessionID { clearUnseen(sessionID) }
         clearAutoResetIndicator(sessionID) // visit: you've seen it
         clearAutoResetIndicator(previous)  // leave: a one-time status must not linger on the row you left
         recordRecency()
         scheduleSave() // selection fires on every click/keystroke — coalesce the writes
         return destinationIndicator
-    }
-
-    /// Clears focus when the newly selected session lives outside the focused workspace, so an explicit
-    /// cross-set select (`session.select <id>` of a hidden session, a notification reveal, a move/close
-    /// that reselects elsewhere) reveals its target — the active session is then always inside the
-    /// visible set. Session navigation (`navigateSession`/`session.go`, Ctrl-Tab, attention-nav) is now
-    /// scoped to the filtered set (`navigableSessions`), so its targets are always in-set and never
-    /// trip this — it stays the safety net only for the explicit cross-set cases. No-op when unfocused,
-    /// when nothing is selected, or when the selection is inside the focused workspace. Persistence
-    /// rides the caller's `selectSession` save.
-    func autoUnfocusIfOutsideFocus(_ sessionID: UUID?) {
-        guard let focusedWorkspaceID, let sessionID else { return }
-        if workspace(forSession: sessionID)?.id != focusedWorkspaceID { self.focusedWorkspaceID = nil }
     }
 
     /// Reset a session's agent indicator to idle when it is marked `autoReset` (the one-time `completed`
@@ -394,7 +399,7 @@ public final class AppStore {
         if wasActive {
             selectedSessionID = closeReselectionTarget(after: location)
             replaceSidebarSelection(with: selectedSessionID)
-            autoUnfocusIfOutsideFocus(selectedSessionID) // the reselected session may live outside the focused workspace
+            disableFocusIfSelectionOutsideSet(selectedSessionID) // the reselected session may live outside the marked set
             recordRecency()
         } else {
             pruneSidebarSelection()
@@ -416,7 +421,10 @@ public final class AppStore {
         guard canRemoveWorkspace, let index = workspaces.firstIndex(where: { $0.id == workspaceID }) else { return }
         let workspace = workspaces[index]
         let removingActive = selectedSessionID.map { id in workspace.sessions.contains { $0.id == id } } ?? false
-        recordRecentClosedWorkspace(workspace, selectedSessionID: removingActive ? selectedSessionID : nil)
+        // the membership goes into the record BEFORE `dropFocusMember` below prunes it, so Reopen Closed
+        // Item can mark the workspace again
+        recordRecentClosedWorkspace(workspace, selectedSessionID: removingActive ? selectedSessionID : nil,
+                                    focusMember: focusedWorkspaceIDs.contains(workspaceID))
         for session in workspace.sessions { emitSessionClosed(session, workspace: workspace.id) }
         if workspace.sessions.isEmpty { scheduleTreeChanged() }
         for session in workspace.sessions {
@@ -427,14 +435,14 @@ public final class AppStore {
             WatermarkStorage.removeRenderedText(sessionID: session.id) // drop any rendered .text PNG; the session is gone
             sessionRecency.remove(session.id)
         }
-        if focusedWorkspaceID == workspaceID { focusedWorkspaceID = nil } // the focused root is gone
+        dropFocusMember(workspaceID) // a marked root is gone; the filter goes with the last member
         workspaces.remove(at: index)
         if removingActive {
             let fallbackIndex = min(index, workspaces.count - 1)
             selectedSessionID = workspaces[fallbackIndex].sessions.first?.id
                 ?? workspaces.first(where: { !$0.sessions.isEmpty })?.sessions.first?.id
             replaceSidebarSelection(with: selectedSessionID)
-            autoUnfocusIfOutsideFocus(selectedSessionID) // the reselected session may live outside the focused workspace
+            disableFocusIfSelectionOutsideSet(selectedSessionID) // the reselected session may live outside the marked set
             recordRecency()
         } else {
             pruneSidebarSelection()
@@ -449,9 +457,10 @@ public final class AppStore {
     /// `selectedSessionID` is unaffected — the id is stable, so a moved active
     /// session stays selected. No-ops if the session or target workspace is
     /// unknown; a same-workspace move to the current slot leaves order unchanged.
-    /// Moving the **active** session out of the focused workspace auto-unfocuses
-    /// (the auto-reveal contract — the active session must stay inside the visible
-    /// set); moving a non-active session leaves focus intact.
+    /// Moving the **active** session out of the marked set suspends the focus
+    /// filter while KEEPING the set (`disableFocusIfSelectionOutsideSet`, the
+    /// auto-reveal contract — the active session must stay inside the visible
+    /// set); moving a non-active session leaves the filter intact.
     public func moveSession(_ sessionID: UUID, toWorkspace targetID: UUID, at index: Int? = nil) {
         guard let source = location(ofSession: sessionID) else { return }
         guard let targetIndex = workspaces.firstIndex(where: { $0.id == targetID }) else { return }
@@ -460,7 +469,7 @@ public final class AppStore {
         let session = workspaces[source.workspaceIndex].sessions.remove(at: source.sessionIndex)
         let destination = max(0, min(index ?? workspaces[targetIndex].sessions.count, workspaces[targetIndex].sessions.count))
         workspaces[targetIndex].sessions.insert(session, at: destination)
-        if sessionID == selectedSessionID { autoUnfocusIfOutsideFocus(sessionID) }
+        if sessionID == selectedSessionID { disableFocusIfSelectionOutsideSet(sessionID) }
         pruneSidebarSelection()
         if before != workspaces.map({ $0.sessions.map(\.id) }) { scheduleTreeChanged() }
         save()
@@ -495,7 +504,7 @@ public final class AppStore {
         let destination = max(0, min(index ?? workspaces[targetIndex].sessions.count,
                                      workspaces[targetIndex].sessions.count))
         workspaces[targetIndex].sessions.insert(contentsOf: moving, at: destination)
-        if let selectedSessionID, movingIDs.contains(selectedSessionID) { autoUnfocusIfOutsideFocus(selectedSessionID) }
+        if let selectedSessionID, movingIDs.contains(selectedSessionID) { disableFocusIfSelectionOutsideSet(selectedSessionID) }
         pruneSidebarSelection()
         if before != workspaces.map({ $0.sessions.map(\.id) }) { scheduleTreeChanged() }
         save()
@@ -544,14 +553,15 @@ public final class AppStore {
     }
 
     /// Steps the selection through the flattened VISIBLE/FILTERED session list (`navigableSessions`:
-    /// the flagged set in `.flagged` mode, the focused workspace's sessions when focused, else all),
-    /// in the sidebar's visual order. `next`/`previous` move one and WRAP at the ends WITHIN the filtered
-    /// set (`next` on the last lands on the first, `previous` on the first lands on the last, never
-    /// leaking across the filter — matching the cyclic attention-nav below); `first`/`last` jump to the
-    /// ends of the filtered list. With no/invalid current selection, `next`/`previous` land on its first
+    /// the flagged set in `.flagged` mode, the MARKED workspaces' sessions while the focus filter is
+    /// applied, else all), in the sidebar's visual order. `next`/`previous` move one and WRAP at the ends
+    /// WITHIN the filtered set (`next` on the last lands on the first, `previous` on the first lands on
+    /// the last, never leaking across the filter — matching the cyclic attention-nav below);
+    /// `first`/`last` jump to the ends of the filtered list.
+    /// With no/invalid current selection, `next`/`previous` land on its first
     /// session. No-op when the filtered list is empty. Routes through `selectSession`, inheriting recency,
     /// badge clearing, persistence, and workspace derivation. Because the targets are always in-set, nav
-    /// never triggers `autoUnfocusIfOutsideFocus` — that stays the safety net for an explicit cross-set
+    /// never triggers `disableFocusIfSelectionOutsideSet` — that stays the safety net for an explicit cross-set
     /// select.
     @discardableResult
     public func navigateSession(_ direction: SessionNavigation) -> AgentIndicator? {
@@ -647,15 +657,6 @@ public final class AppStore {
         save()
     }
 
-    /// Sets (or clears) the focused workspace and persists it. Clean no-op (no write) when unchanged, so
-    /// the delta-computed control/menu callers stay idempotent. Passing nil unfocuses.
-    public func setFocusedWorkspace(_ id: UUID?) {
-        guard focusedWorkspaceID != id else { return }
-        focusedWorkspaceID = id
-        pruneSidebarSelection()
-        save()
-    }
-
     /// Sets one workspace's expand/collapse state and persists it. Clean no-op (no write) for an unknown id
     /// or when unchanged. The sidebar calls this for a GENUINE per-row user toggle only (a row click or the
     /// disclosure triangle), never for a programmatic reveal — so a deliberate collapse survives a later
@@ -681,22 +682,6 @@ public final class AppStore {
             }
         }
         if changed { save() }
-    }
-
-    /// The focused workspace, resolved from `focusedWorkspaceID` — nil when unfocused OR when the id is
-    /// stale (its workspace no longer exists). The single id→workspace lookup the tree filter and the
-    /// bottom-bar focus pill both read, so they can't drift.
-    public var focusedWorkspace: Workspace? {
-        guard let focusedWorkspaceID else { return nil }
-        return workspaces.first(where: { $0.id == focusedWorkspaceID })
-    }
-
-    /// The workspaces the sidebar tree should render: just the focused workspace when `focusedWorkspaceID`
-    /// is set AND that workspace still exists, else all workspaces. The source of truth the tree filters
-    /// on; a stale focus id (its workspace gone) falls back to the full tree.
-    public var visibleWorkspaces: [Workspace] {
-        guard let focused = focusedWorkspace else { return workspaces }
-        return [focused]
     }
 
     /// Sets (or clears) a session's flag — the durable flagged working-set membership the flat sidebar
@@ -769,18 +754,6 @@ public final class AppStore {
         workspaces.flatMap(\.sessions).filter(\.flagged)
     }
 
-    /// The session set navigation operates over — the VISIBLE/FILTERED set, not the whole tree: the
-    /// flagged sessions in `.flagged` sidebar mode, the focused workspace's sessions when a workspace
-    /// is focused, else all sessions. Computed live (`visibleWorkspaces` already collapses to the
-    /// focused workspace, or the full tree when unfocused / the focus id is stale), so clearing the
-    /// flag/focus naturally restores the full set. `navigateSession` next/prev WRAP within this set (an
-    /// end lands on the opposite end, never leaking across the filter). Backs `navigateSession` (and via
-    /// it `session.go`, attention-nav), the Ctrl-Tab MRU candidate set, AND the ⌃P session palette
-    /// (`AppActions.paletteSessions`), so all follow the same filter as the visible sidebar.
-    public var navigableSessions: [Session] {
-        sidebarMode == .flagged ? flaggedSessions : visibleWorkspaces.flatMap(\.sessions)
-    }
-
     // MARK: - Persistence
 
     /// Builds a `Snapshot` value of the current tree. Each session captures its
@@ -794,9 +767,15 @@ public final class AppStore {
             return WorkspaceSnapshot(id: workspace.id, name: workspace.name, sessions: sessions,
                                      collapsed: workspace.isExpanded ? nil : true)
         }
+        // the marked set in TREE order, so the on-disk list is deterministic rather than following the
+        // Set's hash order; an unmarked store omits both focus keys, keeping its file identical to one
+        // written before the set existed. The legacy `focusedWorkspaceID` is never populated.
+        let focusIDs = workspaces.map(\.id).filter(focusedWorkspaceIDs.contains)
         return Snapshot(selectedSessionID: selectedSessionID, workspaces: workspaceSnapshots,
                         sidebarWidth: sidebarWidth, sidebarVisible: sidebarVisible, sidebarMode: sidebarMode,
-                        focusedWorkspaceID: focusedWorkspaceID, sessionRecency: sessionRecency.items)
+                        focusedWorkspaceIDs: focusIDs.isEmpty ? nil : focusIDs,
+                        focusEnabled: focusEnabled ? true : nil,
+                        sessionRecency: sessionRecency.items)
     }
 
     /// Rebuilds the tree from a snapshot: fresh `Session`s (surfaces and shells
@@ -834,9 +813,7 @@ public final class AppStore {
         sidebarWidth = min(AppStore.sidebarWidthMax, max(AppStore.sidebarWidthMin, snapshot.sidebarWidth ?? AppStore.sidebarWidthDefault))
         sidebarVisible = snapshot.sidebarVisible ?? true
         sidebarMode = snapshot.sidebarMode ?? .tree
-        // a stale focus id (its workspace not in the restored tree) is harmless — `visibleWorkspaces`
-        // falls back to the full tree — so restore it verbatim; nil stays unfocused.
-        focusedWorkspaceID = snapshot.focusedWorkspaceID
+        restoreFocus(from: snapshot)
         if let id = snapshot.selectedSessionID, session(withID: id) == nil {
             selectedSessionID = nil
         } else {

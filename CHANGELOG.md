@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.18.1 - 2026-07-28
+
+### Improved
+
+- a `cookbook/` of installable `agtermctl` recipes: show one project's workspaces and hide the rest, snapshot a project and bring it back later, park every window but one in the Dock, pick a path in an overlay and type it into the session, open TUI launchers in an overlay or a split, and resume a Claude Code or Codex conversation per tab; each recipe carries its own README, its scripts, and the minimum agterm version it needs, and the repo now has a `CONTRIBUTING.md` #305 @umputun
+
+### Bug Fixes
+
+- a session was left showing a blank pane that took no keyboard input when the primary shell exited while a split was hidden, with the hidden split's shell still running and reachable from neither pane; the survivor was promoted in the model but the view kept hosting the torn-down surface #304 @umputun
+
+## v0.18.0 - 2026-07-27
+
+### New Features
+
+- the sidebar focus filter now marks a set of workspaces instead of a single one, and the marked set survives turning the filter off, so a working set can be built member by member and the whole tree is one toggle away instead of a lost selection; a marked row draws the filled grid icon, the row context menu toggles membership, a bottom-bar button applies or suspends the filter, and `agtermctl workspace filter` plus the new `workspace focus add` mode drive both halves with per-workspace read-back on `tree` #297 @umputun
+- `agtermctl keymap list` reports what a keybinding actually resolved to, the read side of `keymap reload`: every built-in action with its chord and whether it was overridden, keyless actions included so free chords are visible, alongside the key equivalents the live menu bar carries with their submenu path and enabled state, plus the config path, custom commands, and parse diagnostics with line and message; both halves render in the same syntax, so a binding that does not fire can be diagnosed by comparing them instead of pressing keys and reporting what happened #301 @umputun
+
+### Improved
+
+- the dashboard button is easier to tell apart from the workspaces glyph: the two were different symbols but both a 2x2 arrangement inside a square, close enough to be confused at title-bar and menu size, so the dashboard now carries a wider 2x2 split 5353785 @umputun
+
+### Bug Fixes
+
+- ⌘W closed the whole window instead of the active session once `close_session` had been rebound away from ⌘W and back again, and only a relaunch cleared it; the chord is now asserted from AppKit at launch, on keymap change, on activation, and on menu tracking, rather than waiting for a menu rebuild that never came #298 @umputun
+
 ## v0.17.1 - 2026-07-25
 
 ### Improved

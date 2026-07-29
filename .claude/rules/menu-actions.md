@@ -59,14 +59,24 @@ paths:
 - **Menu split: View vs Navigate.**
   The menu bar has TWO custom menus (besides File/Help).
   **View** (`CommandGroup(after: .toolbar)`) holds appearance + what-is-shown:
-  font/theme, sidebar show-hide + expand/collapse, the flagged-view + Flag/Clear-Flagged + Focus Workspace
-  items, the surface toggles (Split/Scratch/Find/Quick Terminal), and Toggle Full Screen
+  font/theme, sidebar show-hide + expand/collapse, the flagged-view + Flag/Clear-Flagged items, the four
+  workspace-focus items (Focus Workspace and Toggle Workspace Filter, both `BuiltinAction`-backed and so
+  rebindable; Add Workspace to Focus and Clear Focus, plain keyless items),
+  the surface toggles (Split/Scratch/Find/Quick Terminal), and Toggle Full Screen
   (`toggle_fullscreen`, ⌃⌘F → `AppActions.toggleFullscreen()`, native `NSWindow.toggleFullScreen` on the
   key window; the `window.fullscreen` control command is a fourth driver of native full screen, via
   `WindowRegistry.fullscreen` with id resolution (not through `toggleFullscreen()`) — see control-api / windows).
   agterm ships its OWN Toggle Full Screen item so full screen is rebindable/palette/control-drivable;
   `AppDelegate` strips AppKit's auto-injected native "Enter Full Screen" item (re-injected on every menu
   open) so the two don't render as a duplicate — see the `window.fullscreen` note in windows.md.
+  **None of the four workspace-focus items is gated on the SIDEBAR MODE** — the menu item, its palette
+  twin, the `focus_workspace` keybind, and the `workspace.focus`/`workspace.filter` control modes are all
+  mode-agnostic, because membership is model state the tree applies the moment it is shown again (and a
+  keybind-driven sibling could not be gated by a palette predicate anyway).
+  Only Expand/Collapse Workspaces carry the `!treeMode` gate, and they carry it in BOTH the menu and the
+  palette, since they manipulate rows the flagged view never renders.
+  A palette entry gated differently from its menu twin is exactly the drift the keep-in-sync convention
+  exists to stop — Add Workspace to Focus carried a palette-only tree-mode term for one review round.
   **Navigate** (a separate top-level `CommandMenu("Navigate")`, placed right after the View group so
   AppKit renders it after View) holds moving the selection/focus: the two palettes (Go to Session / Command
   Palette), session stepping (Previous/Next, Previous/Next Attention, First/Last),
@@ -245,14 +255,18 @@ paths:
 - **The FOCUS filter deliberately does NOT scope the close-reselection MRU — do not "fix" this by reaching for
   `navigableSessions`.**
   It is the obvious-looking choice (one set, already the definition of "what the user is navigating within") and
-  it is WRONG here, because focus is a property of the TREE, not of the selection: `setFocusedWorkspace` never
-  moves the active session, so focus can sit on a workspace the closing session doesn't even belong to.
+  it is WRONG here, because focus is a property of the TREE, not of the selection: neither `setFocusedWorkspace`
+  nor `setFocusMembership` ever moves the active session, so the marked set can hold workspaces the closing
+  session doesn't even belong to.
+  Generalizing focus from one id to a SET does not soften this — it widens it, since the set can now be several
+  workspaces, none of them the closing session's.
   Scoping by `navigableSessions` (which folds focus in) breaks two reachable states: closing a session while
-  ANOTHER workspace is focused jumps the user INTO that focused workspace, and closing the focused workspace's LAST
-  session widens into an EMPTY set (`navigableSessions` has collapsed to the workspace just emptied) and falls
-  through to the positional first-workspace jump.
-  Landing outside the focused workspace needs no scoping defense anyway: every caller already runs
-  `autoUnfocusIfOutsideFocus` on the pick, which drops the filter to reveal the target.
+  ANOTHER workspace is marked jumps the user INTO the marked set, and closing the LAST session of the only
+  marked workspace widens into an EMPTY set (`navigableSessions` has collapsed to the workspace just emptied)
+  and falls through to the positional first-workspace jump.
+  Landing outside the marked set needs no scoping defense anyway: every caller already runs
+  `disableFocusIfSelectionOutsideSet` on the pick, which switches the filter off (KEEPING the set) to reveal
+  the target.
   Both cases are pinned by `closeActiveSessionWhileAnotherWorkspaceIsFocusedStaysInTheClosingWorkspace` and
   `closeTheFocusedWorkspacesLastSessionPicksTheRecentSurvivorElsewhere`.
   Only an empty MRU after that (a fresh restore before anything was activated, or the only recent entry was the one
@@ -342,10 +356,14 @@ paths:
   All paths share the selection boundary and reveal helper so pre-reset status and pane semantics cannot drift.
   Only the control `session.go next-attention|prev-attention` does NOT reveal (`goSession` just drives
   `AppStore.navigateSession`), so the socket steps the selection without moving focus into the pane.
-- `Delete Workspace` lives once in `AppActions.deleteWorkspace(_:)` (confirm alert when the workspace
+- `Delete Workspace` lives once in `AppActions.deleteWorkspace(_:in:)` (confirm alert when the workspace
   still has sessions, then `AppStore.removeWorkspace`) and is invoked from all three surfaces — the sidebar
   workspace row's context menu, the menu bar, and the action palette (the latter two via `deleteActiveWorkspace()`,
-  which targets `currentWorkspaceID`).
+  which targets the frontmost store's `currentWorkspaceID` and owns the `uiActionsEnabled` gate).
+  It is STORE-SCOPED like every other workspace-row menu item (Close/Flag/Duplicate/Reveal/Focus): the row
+  menu passes its OWN window-local store, since the item's enabled state came from that store's
+  `canRemoveWorkspace` and a right-click does not raise a background window — routed through the frontmost
+  store the clicked id is absent, the lookup returns nil, and the item silently does nothing.
   `AppStore.removeWorkspace` tears down each session's surfaces, prunes recency,
   and reselects; `canRemoveWorkspace` (count > 1) enforces keep-at-least-one and gates the menu item
   / palette entry.
@@ -361,7 +379,7 @@ paths:
   (`equivalent(for:)?.glyphString`, nil = no shortcut) renders an
   action's CURRENT chord as macOS glyphs (`⌃⌘S`), tracking a `keymap.conf` rebind live.
   `paletteActions()` reads it for the right-aligned palette hint; `WindowContentView.helpHint(_:_:)`
-  appends `" (<glyph>)"` to the `.help(…)` tooltip of the 8 `BuiltinAction`-backed toolbar/sidebar buttons
+  appends `" (<glyph>)"` to the `.help(…)` tooltip of the 10 `BuiltinAction`-backed toolbar/sidebar buttons
   (a button with no configured shortcut shows just its label). One resolver so the two surfaces can't
   drift — the display analogue of the `defaultChord`-single-source-of-truth rule. Tooltip text is pure
   visual chrome, so it is control-API keep-in-sync EXEMPT (no command, nothing to drive headless).

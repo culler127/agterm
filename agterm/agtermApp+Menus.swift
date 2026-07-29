@@ -6,7 +6,9 @@ extension agtermApp {
     /// The active SwiftUI shortcut for a built-in action, driven by the keymap: the user override when
     /// one is `map`ped, else the action's shipped default. `nil` only for a keyless action, which stays
     /// keyless until the user maps a chord.
-    /// Because `keymap` is `@Observable`, reading it here re-renders the menu shortcut on a reload.
+    /// `keymap` is `@Observable`, but SwiftUI does not rebuild the menu when it changes — it defers to the
+    /// next app activation, so a reload leaves the live key equivalents stale until then.
+    /// ⌘W is asserted from AppKit instead, by `AppDelegate.applyCloseSessionChord`.
     private func shortcut(for action: BuiltinAction) -> KeyboardShortcut? {
         settingsModel.keymap.equivalent(for: action).map(Self.toShortcut)
     }
@@ -239,15 +241,35 @@ extension agtermApp {
                 // keyless by default (rebindable via focus_workspace). The control half is workspace.focus.
                 // the label tracks the toggle (Focus/Unfocus) like the workspace row's context-menu item.
                 let focusStore = library.activeStore
-                let currentFocused = focusStore?.focusedWorkspace?.id == focusStore?.currentWorkspaceID
                 Button { actions.focusActiveWorkspace() } label: {
-                    Label(currentFocused ? "Unfocus Workspace" : "Focus Workspace", systemImage: "scope")
+                    Label(focusStore?.isCurrentWorkspaceSoleFocus == true ? "Unfocus Workspace" : "Focus Workspace",
+                          systemImage: "scope")
                 }
                 .keyboardShortcut(shortcut(for: .focusWorkspace))
-                .disabled(library.activeStore?.currentWorkspaceID == nil || modalActive)
-                // plain (non-BuiltinAction) clear, like Clear Flagged; the bottom-bar pill ✕ is primary.
+                .disabled(focusStore?.currentWorkspaceID == nil || modalActive)
+                // the ADDITIVE sibling of Focus Workspace: mark the current workspace without dropping the
+                // other members, so a working set can be built from the menu. Plain (non-BuiltinAction)
+                // keyless item like Clear Focus below. The control half is workspace.focus add. Disabled
+                // once the current workspace is already marked — it would be a silent no-op (the row menu
+                // flips to "Remove from Focus" instead, which it can do because it has a clicked row).
+                // Membership is NOT gated on the sidebar mode here or in the palette (unlike Expand/Collapse
+                // Workspaces above), matching the focus siblings and the control modes.
+                Button { actions.addActiveWorkspaceToFocus() } label: {
+                    Label("Add Workspace to Focus", systemImage: "square.grid.2x2")
+                }
+                .disabled(focusStore?.currentWorkspaceID == nil
+                    || focusStore?.isCurrentWorkspaceFocusMember == true || modalActive)
+                // apply or suspend the filter without losing the marked set — the menu twin of the
+                // bottom-bar grid toggle, disabled in the same empty-set state (the store refuses to
+                // enable an empty set, so the item would be a no-op). The control half is workspace.filter.
+                Button { actions.toggleFocusFilter() } label: {
+                    Label("Toggle Workspace Filter", systemImage: "square.grid.2x2")
+                }
+                .keyboardShortcut(shortcut(for: .toggleWorkspaceFilter))
+                .disabled((focusStore?.focusedWorkspaceIDs.isEmpty ?? true) || modalActive)
+                // plain (non-BuiltinAction) clear, like Clear Flagged; the bottom-bar toggle is primary.
                 Button { actions.clearFocus() } label: { Label("Clear Focus", systemImage: "scope") }
-                    .disabled(library.activeStore?.focusedWorkspaceID == nil || modalActive)
+                    .disabled((focusStore?.focusedWorkspaceIDs.isEmpty ?? true) || modalActive)
                 Button { actions.toggleSplit() } label: {
                     Label(library.activeStore?.activeSession?.isSplit == true ? "Hide Split" : "Split Right", systemImage: "rectangle.split.2x1")
                 }
@@ -299,7 +321,7 @@ extension agtermApp {
                 Button { actions.toggleAttentionPalette() } label: { Label("Go to Attention…", systemImage: "bell") }
                     .keyboardShortcut(shortcut(for: .showAttention))
                     .disabled(modalActive)
-                Button { actions.toggleDashboard() } label: { Label("Dashboard", systemImage: "square.split.2x2") }
+                Button { actions.toggleDashboard() } label: { Label("Dashboard", systemImage: "rectangle.split.2x2") }
                     .keyboardShortcut(shortcut(for: .dashboard))
                     // stays zoomed-only, NOT modalActive: ⌘⇧D must still CLOSE an open dashboard, so this
                     // toggle is the escape hatch and is never disabled by the dashboard being open

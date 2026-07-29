@@ -3,6 +3,8 @@
 Worked `agtermctl` examples. See `reference.md` for exact flags and return shapes. All assume
 `agtermctl` is on PATH and you are inside an agterm session (`AGTERM_ENABLED=1`).
 
+Installable, human-facing versions of these workflows: https://github.com/umputun/agterm/tree/master/cookbook
+
 ## Inspect the current state
 
 ```bash
@@ -339,13 +341,54 @@ agtermctl session seen --target "$SID"                   # clear it, selection/f
 ## Focus a single workspace
 
 Collapse the sidebar tree to one workspace's sessions (hiding the others), with the full tree one
-command away. Per-window and persisted; orthogonal to `sidebar mode`. While focused, `session go`
-navigation is scoped to that workspace's sessions; unfocusing restores stepping over all sessions.
+command away. `on` replaces the marked set with this workspace and applies the filter; `off` unmarks it,
+which switches the filter off as the set empties. Per-window and persisted; orthogonal to
+`sidebar mode`. While the filter is applied, `session go` navigation is scoped to the marked workspaces'
+sessions; suspending it restores stepping over all sessions.
+
+Every mode acts on `--target`, which defaults to `active` — the workspace of the SELECTED session, not
+whatever the previous line addressed. Focusing does not move the selection, so always name the workspace
+you mean.
 
 ```bash
 agtermctl workspace focus on --target "$AGTERM_WORKSPACE_ID"  # zoom to this workspace
-agtermctl workspace focus toggle --target a1b2                # flip focus on another workspace
-agtermctl workspace focus off                                 # restore the full tree
+agtermctl workspace focus toggle --target a1b2                # replace-toggle onto another workspace
+agtermctl workspace focus off --target a1b2                   # unmark it; the tree comes back
+```
+
+## Build, read back, and restore a multi-workspace working set
+
+`workspace focus add` MARKS a workspace without switching the filter on, so a set is built member by
+member with the whole tree still on screen and applied ONCE with `workspace filter on`. `workspace
+filter off` suspends it WITHOUT losing the set, so peeking at everything and coming back costs one call
+each way. Membership reads back per workspace as `focused`, the flag as the tree-level
+`workspaceFilter`, and a workspace row renders iff
+`sidebarVisible && sidebarMode == "tree" && (!workspaceFilter || focused)` — no workspace row renders at
+all with the sidebar hidden or in `flagged` mode (that view is a flat flagged-session list); in `tree`
+mode with the filter off the whole tree is on screen regardless of membership, and only with the filter
+on does visibility narrow to the members. `filter on` with nothing marked is refused, so an applied
+filter always has a visible member and the pair can never disagree with what is on screen.
+
+```bash
+agtermctl workspace focus add --target a1b2      # mark; the tree stays fully visible
+agtermctl workspace focus add --target c3d4      # mark a second one, still nothing hidden
+agtermctl workspace filter on                    # now show only the two marked workspaces
+
+# record the working set before changing it (one tree read for both fields)
+tree=$(agtermctl tree --json)
+marked=$(printf '%s' "$tree" | jq -r '.result.tree.workspaces[] | select(.focused) | .id')
+was=$(printf '%s' "$tree" | jq -r '.result.tree.workspaceFilter')
+
+agtermctl workspace filter off                   # peek at the whole tree; the set survives
+agtermctl workspace filter on                    # back to the same two workspaces
+
+# restore an earlier set exactly: clear, re-mark, then re-apply only if it was applied
+agtermctl workspace filter off
+for ws in $(agtermctl tree --json | jq -r '.result.tree.workspaces[] | select(.focused) | .id'); do
+  agtermctl workspace focus off --target "$ws"
+done
+for ws in $marked; do agtermctl workspace focus add --target "$ws"; done
+if [ "$was" = "true" ]; then agtermctl workspace filter on; fi
 ```
 
 ## Expand or collapse the sidebar tree
@@ -713,4 +756,53 @@ agtermctl theme set --dark none              # stop tracking; the light theme st
 ```bash
 agtermctl tree --json --window work          # the "work" window's tree (prefix match)
 agtermctl session new --window work --cwd "$HOME"
+```
+
+## Checking a keybinding actually took effect
+
+`keymap.conf` says one thing; the menu bar dispatches another. After a rebind, verify both.
+
+```bash
+agtermctl keymap reload                      # apply the edited file (prints the diagnostic count)
+agtermctl keymap list                        # the resolved chords AND the live menu equivalents
+```
+
+Confirm one action's chord, then confirm the menu is really carrying it:
+
+```bash
+agtermctl keymap list --json \
+  | jq -r '.result.keymap.actions[] | select(.action == "close_session") | .chord'
+agtermctl keymap list --json \
+  | jq -r '.result.keymap.menu[] | select(.chord == "cmd+w") | "\(.menu) > \(.title)  [\(.selector)]"'
+```
+
+If those disagree, the keymap is fine and the menu is stale or the chord was taken: SwiftUI rebuilds the
+menu only on the next app activation, so switch away and back before concluding anything, and relaunch if
+it persists.
+
+A menu entry with `"enabled": false` holds the chord but is inert — AppKit consumes the key and fires
+nothing, including any same-chord sibling. Most File/View/Navigate items disable themselves while a modal
+is up, so check this before blaming the binding:
+
+```bash
+agtermctl keymap list --json \
+  | jq -r '.result.keymap.menu[] | select(.enabled == false) | "\(.chord)  \(.menu) > \(.title)"'
+```
+
+Find every chord already in use before picking one for a new binding. All THREE sources matter: a
+custom command's shortcut is delivered by the key monitor rather than a menu item, so it appears in
+`commands` and can never show up under `menu`. Miss it and a new `map` line on the same chord makes the
+next reload drop the custom binding.
+
+```bash
+agtermctl keymap list --json | jq -r '
+  [ .result.keymap.actions[].chord,
+    .result.keymap.commands[].shortcut,
+    .result.keymap.menu[].chord ] | map(select(. != null)) | unique | .[]'
+```
+
+Read the parse problems in full rather than just their count:
+
+```bash
+agtermctl keymap list --json | jq -r '.result.keymap.diagnostics[] | "line \(.line): \(.message)"'
 ```

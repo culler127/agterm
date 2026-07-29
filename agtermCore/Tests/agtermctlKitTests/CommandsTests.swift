@@ -73,8 +73,55 @@ struct CommandsTests {
         #expect(try request(["workspace", "focus", "on", "--target", "9f3c"]) == expected)
     }
 
+    @Test func workspaceFocusAddWithTarget() throws {
+        let expected = ControlRequest(cmd: .workspaceFocus, target: "9f3c", args: ControlArgs(mode: "add"))
+        #expect(try request(["workspace", "focus", "add", "--target", "9f3c"]) == expected)
+    }
+
     @Test func workspaceFocusRejectsBadMode() {
-        #expect(throws: (any Error).self) { try Agtermctl.parseAsRoot(["workspace", "focus", "sideways"]) }
+        // rejected by validate() before any request is built; pin the exact allCases-derived message so an
+        // unrelated parse failure can't pass for it.
+        #expect(validationMessage(["workspace", "focus", "sideways"]) == "mode must be one of: on, off, toggle, add")
+    }
+
+    @Test func workspaceFocusHelpListsEveryModeAndWhatItDoesToTheFilter() {
+        // the abstract AND the argument's per-mode prose are both built from allCases, so `--help` can't go
+        // stale when a mode is added. Asserting the raw values alone was NOT enough — the abstract carries
+        // those on its own, so a hand-written argument help could rot undetected; assert each mode's whole
+        // clause (which names its effect on the filter flag) survives into the rendered help.
+        let help = Workspace.Focus.helpMessage(columns: 400)
+        for mode in ControlWorkspaceFocusMode.allCases {
+            #expect(help.contains(mode.rawValue), "workspace focus help should list \(mode.rawValue), got: \(help)")
+            #expect(help.contains(mode.helpSummary),
+                    "workspace focus help should explain \(mode.rawValue)'s filter effect, got: \(help)")
+        }
+    }
+
+    @Test func workspaceFilterDefaultsToggle() throws {
+        #expect(try request(["workspace", "filter"]) == ControlRequest(cmd: .workspaceFilter, args: ControlArgs(mode: "toggle")))
+    }
+
+    @Test func workspaceFilterOn() throws {
+        #expect(try request(["workspace", "filter", "on"]) == ControlRequest(cmd: .workspaceFilter, args: ControlArgs(mode: "on")))
+    }
+
+    @Test func workspaceFilterOff() throws {
+        #expect(try request(["workspace", "filter", "off"]) == ControlRequest(cmd: .workspaceFilter, args: ControlArgs(mode: "off")))
+    }
+
+    @Test func workspaceFilterThreadsWindow() throws {
+        let expected = ControlRequest(cmd: .workspaceFilter, args: ControlArgs(mode: "on", window: "win"))
+        #expect(try request(["workspace", "filter", "on", "--window", "win"]) == expected)
+    }
+
+    @Test func workspaceFilterRejectsBadMode() {
+        #expect(validationMessage(["workspace", "filter", "sideways"]) == "mode must be on, off, or toggle")
+    }
+
+    @Test func workspaceFilterTakesNoTarget() {
+        // window-scoped: it flips the whole window's filter, so a --target would imply it acts on one
+        // workspace. Carrying only ClientOptions is what makes the flag unknown here.
+        #expect(throws: (any Error).self) { try Agtermctl.parseAsRoot(["workspace", "filter", "on", "--target", "9f3c"]) }
     }
 
     @Test func workspaceCollapseDefaultsActive() throws {
@@ -1037,6 +1084,15 @@ struct CommandsTests {
     @Test func keymapReloadRejectsWindowSelector() {
         // keymap.reload is app-global, so --window is meaningless and must not be accepted.
         #expect(throws: (any Error).self) { try Agtermctl.parseAsRoot(["keymap", "reload", "--window", "w1"]) }
+    }
+
+    @Test func keymapList() throws {
+        #expect(try request(["keymap", "list"]) == ControlRequest(cmd: .keymapList))
+    }
+
+    @Test func keymapListRejectsWindowSelector() {
+        // keymap.list is app-global like keymap.reload, so --window is meaningless.
+        #expect(throws: (any Error).self) { try Agtermctl.parseAsRoot(["keymap", "list", "--window", "w1"]) }
     }
 
     @Test func configReload() throws {

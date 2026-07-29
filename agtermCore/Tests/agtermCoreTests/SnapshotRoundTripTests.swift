@@ -211,6 +211,103 @@ struct SnapshotRoundTripTests {
         #expect(snap.foregroundCommand == ["claude"])
     }
 
+    @Test func focusSetRoundTripsThroughSnapshot() throws {
+        let store = makeStore()
+        let one = store.addWorkspace(name: "one")
+        _ = store.addWorkspace(name: "two")
+        let three = store.addWorkspace(name: "three")
+        store.setFocusMembership(three.id, member: true) // marked out of tree order
+        store.setFocusMembership(one.id, member: true)
+        store.setFocusEnabled(true) // marking only marks; applying the set is its own step
+        let snap = store.snapshot()
+        #expect(snap.focusedWorkspaceIDs == [one.id, three.id]) // written in tree order, not Set order
+        #expect(snap.focusEnabled == true)
+        let decoded = try JSONDecoder().decode(Snapshot.self, from: JSONEncoder().encode(snap))
+        let restored = makeStore()
+        restored.restore(from: decoded)
+        #expect(restored.focusedWorkspaceIDs == [one.id, three.id] && restored.focusEnabled)
+        #expect(restored.visibleWorkspaces.map(\.id) == [one.id, three.id])
+    }
+
+    @Test func disabledFilterRoundTripsKeepingItsMarkedSet() {
+        // the set persists apart from the flag, so a relaunch with the filter off still remembers what
+        // was marked — one flip of the bottom-bar toggle brings the working set back.
+        let store = makeStore()
+        let work = store.addWorkspace(name: "work")
+        _ = store.addWorkspace(name: "personal")
+        store.setFocusMembership(work.id, member: true)
+        store.setFocusEnabled(true)
+        store.setFocusEnabled(false)
+        let snap = store.snapshot()
+        #expect(snap.focusedWorkspaceIDs == [work.id] && snap.focusEnabled == nil) // off omits the key
+        let restored = makeStore()
+        restored.restore(from: snap)
+        #expect(restored.focusedWorkspaceIDs == [work.id] && !restored.focusEnabled)
+    }
+
+    @Test func unmarkedStoreOmitsBothFocusKeys() throws {
+        // nothing marked writes neither key, so an unfiltered tree serializes like a legacy snapshot.
+        let store = makeStore()
+        _ = store.addWorkspace(name: "work")
+        let snap = store.snapshot()
+        #expect(snap.focusedWorkspaceIDs == nil && snap.focusEnabled == nil)
+        let json = try String(decoding: JSONEncoder().encode(snap), as: UTF8.self)
+        // covers the legacy `focusedWorkspaceID` too — it has no stored property at all now, so nothing
+        // starting with `focusedWorkspace` may appear.
+        #expect(!json.contains("focusedWorkspace") && !json.contains("focusEnabled"))
+    }
+
+    @Test func legacySnapshotWithSingleFocusedWorkspaceDecodesAsAnEnabledSet() throws {
+        // the pre-set release wrote only `focusedWorkspaceID`, whose presence meant the filter was on;
+        // it must migrate to a one-member enabled set instead of decoding as nothing marked.
+        let ws = UUID()
+        let json = #"{"version":1,"workspaces":[],"focusedWorkspaceID":"\#(ws.uuidString)"}"#
+        let snap = try JSONDecoder().decode(Snapshot.self, from: Data(json.utf8))
+        #expect(snap.focusedWorkspaceIDs == [ws])
+        #expect(snap.focusEnabled == true)
+    }
+
+    @Test func reEncodingAMigratedSnapshotDropsTheLegacyFocusKey() throws {
+        // decode-only means decode-only: a legacy file that rides a load -> mutate -> save path (e.g.
+        // `WindowLibrary.clearClosedWindowFontSizes`) must be rewritten with the SET keys alone. While the
+        // legacy value was kept in a stored property it was re-encoded alongside them, so the file kept a
+        // key this build never means to write.
+        let ws = UUID()
+        let json = #"{"version":1,"workspaces":[],"focusedWorkspaceID":"\#(ws.uuidString)"}"#
+        let decoded = try JSONDecoder().decode(Snapshot.self, from: Data(json.utf8))
+
+        let reEncoded = try String(decoding: JSONEncoder().encode(decoded), as: UTF8.self)
+
+        #expect(!reEncoded.contains("\"focusedWorkspaceID\""))
+        #expect(reEncoded.contains("\"focusedWorkspaceIDs\"") && reEncoded.contains("\"focusEnabled\""))
+        let again = try JSONDecoder().decode(Snapshot.self, from: Data(reEncoded.utf8))
+        #expect(again.focusedWorkspaceIDs == [ws] && again.focusEnabled == true) // the filter survives the rewrite
+    }
+
+    @Test func snapshotWithBothFocusKeysPrefersTheSet() throws {
+        // a file carrying both (a downgrade-then-upgrade round trip) must take the SET: the legacy key
+        // holds at most one member and would silently narrow a multi-workspace filter.
+        let a = UUID(), b = UUID(), stale = UUID()
+        let json = #"""
+        {"version":1,"workspaces":[],"focusedWorkspaceID":"\#(stale.uuidString)",
+         "focusedWorkspaceIDs":["\#(a.uuidString)","\#(b.uuidString)"],"focusEnabled":false}
+        """#
+        let snap = try JSONDecoder().decode(Snapshot.self, from: Data(json.utf8))
+        #expect(snap.focusedWorkspaceIDs == [a, b])
+        #expect(snap.focusEnabled == false) // the explicit flag wins, not the legacy key's implied `true`
+    }
+
+    @Test func snapshotWithoutAnyFocusKeyDecodesToNilWithoutThrowing() throws {
+        // neither key present must decode (nil/nil) rather than throwing — a throw here would fail the
+        // whole load and wipe the saved tree over a per-window view filter.
+        let json = #"{"version":1,"workspaces":[]}"#
+        let snap = try JSONDecoder().decode(Snapshot.self, from: Data(json.utf8))
+        #expect(snap.focusedWorkspaceIDs == nil && snap.focusEnabled == nil)
+        let store = makeStore()
+        store.restore(from: snap)
+        #expect(store.focusedWorkspaceIDs.isEmpty && !store.focusEnabled)
+    }
+
     @Test func sessionSnapshotDecodesWithoutSplitRatio() throws {
         // a SessionSnapshot persisted before splitRatio existed (the key absent) must decode to nil, not
         // fail the load — the forward-compat contract the optional field documents.

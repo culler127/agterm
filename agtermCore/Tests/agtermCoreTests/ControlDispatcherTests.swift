@@ -552,20 +552,6 @@ struct ControlDispatcherTests {
         #expect(actions.calls == [.workspaceMove(target: "workspace", window: "win", .bottom)])
     }
 
-    @Test func workspaceFocusRoutesModeForHostSideValidation() async {
-        let actions = MockControlActions()
-        let dispatcher = ControlDispatcher(actions: actions)
-
-        let focused = await dispatcher.dispatch(ControlRequest(
-            cmd: .workspaceFocus,
-            target: "workspace",
-            args: ControlArgs(mode: "on", window: "win")
-        ))
-
-        #expect(focused == ControlResponse(ok: true))
-        #expect(actions.calls == [.workspaceFocus(target: "workspace", window: "win", "on")])
-    }
-
     @Test func workspaceCollapseAndExpandRouteExpandedFlag() async {
         let actions = MockControlActions()
         let dispatcher = ControlDispatcher(actions: actions)
@@ -1095,6 +1081,34 @@ struct ControlDispatcherTests {
         #expect(keymap == ControlResponse(ok: true, result: ControlResult(count: 2)))
         #expect(config == ControlResponse(ok: true, result: ControlResult(count: 3)))
         #expect(actions.calls == [.keymapReload, .configReload])
+    }
+
+    @Test func keymapListRoutesToActionsAndKeepsThePayload() async {
+        let actions = MockControlActions()
+        let dispatcher = ControlDispatcher(actions: actions)
+        let payload = ControlKeymap.project(keymap: Keymap(builtinOverrides: [:], commands: []),
+                                            diagnostics: [], path: "/tmp/keymap.conf",
+                                            menu: [ControlKeymapMenuItem(menu: "File", title: "Close Session",
+                                                                         chord: "cmd+w", selector: "menuAction:")])
+        actions.nextKeymapListResponse = ControlResponse(ok: true, result: ControlResult(keymap: payload))
+
+        let response = await dispatcher.dispatch(ControlRequest(cmd: .keymapList))
+
+        #expect(response == ControlResponse(ok: true, result: ControlResult(keymap: payload)))
+        #expect(actions.calls == [.keymapList])
+    }
+
+    // keymap.list takes no target and no args, so anything a caller attaches must be ignored rather than
+    // rejected or forwarded — it is a pure read.
+    @Test func keymapListIgnoresTargetAndArgs() async {
+        let actions = MockControlActions()
+        let dispatcher = ControlDispatcher(actions: actions)
+
+        let response = await dispatcher.dispatch(ControlRequest(cmd: .keymapList, target: "active",
+                                                                args: ControlArgs(window: "w1")))
+
+        #expect(response?.ok == true)
+        #expect(actions.calls == [.keymapList])
     }
 
     @Test func notifyRequiresBodyBeforeCallingActions() async {

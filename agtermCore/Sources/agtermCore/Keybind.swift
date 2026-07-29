@@ -23,9 +23,12 @@ public struct Modifier: OptionSet, Hashable, Sendable {
 /// The four arrows are here because the six arrow-bound built-ins ship their defaults on them, so the
 /// grammar must be able to spell what `BuiltinAction.defaultChord` returns.
 ///
-/// Adding a name here means updating four sites, two inbound and two outbound:
+/// Adding a name here means updating five sites, two inbound and three outbound:
 /// - `CustomCommandRunner` and `UndoCloseShortcut` resolve `NSEvent` → name via `namedKey(forKeyCode:)`,
 ///   so a name with no keycode parses in the file yet never fires;
+/// - `namedKey(forKeyEquivalent:)` resolves a live `NSMenuItem`'s key-equivalent CHARACTER back to the
+///   name for `keymap.list`, so a name missing there makes every menu item carrying that key render with
+///   the key absent and stop comparing against the resolved chord (its own test pins the two sets equal);
 /// - `Chord.glyphString` renders the name in palette hints and tooltips — it degrades to the raw name,
 ///   so a miss here is cosmetic;
 /// - `agtermApp.toShortcut` maps the name to a SwiftUI `KeyEquivalent`, and its `default` arm is
@@ -53,6 +56,136 @@ public func namedKey(forKeyCode keyCode: UInt16) -> String? {
     case 124: return "right"
     case 125: return "down"
     case 126: return "up"
+    default: return nil
+    }
+}
+
+/// The Latin base character at a physical ANSI key position, or `nil` for a position that carries no
+/// Latin key (a named key, a function key, the keypad). The letters, digits, and punctuation of the ANSI
+/// layout, keyed by macOS virtual key code — the values are exactly the single characters `parseKeybind`
+/// accepts as a base key, so every entry is spellable in `keymap.conf`.
+///
+/// This is the layout-INDEPENDENT half of key resolution: a virtual key code names a physical position
+/// and never changes with the active input source, unlike the character that position produces.
+func latinKey(forKeyCode keyCode: UInt16) -> String? {
+    switch keyCode {
+    case 0: return "a"
+    case 1: return "s"
+    case 2: return "d"
+    case 3: return "f"
+    case 4: return "h"
+    case 5: return "g"
+    case 6: return "z"
+    case 7: return "x"
+    case 8: return "c"
+    case 9: return "v"
+    case 11: return "b"
+    case 12: return "q"
+    case 13: return "w"
+    case 14: return "e"
+    case 15: return "r"
+    case 16: return "y"
+    case 17: return "t"
+    case 18: return "1"
+    case 19: return "2"
+    case 20: return "3"
+    case 21: return "4"
+    case 22: return "6"
+    case 23: return "5"
+    case 24: return "="
+    case 25: return "9"
+    case 26: return "7"
+    case 27: return "-"
+    case 28: return "8"
+    case 29: return "0"
+    case 30: return "]"
+    case 31: return "o"
+    case 32: return "u"
+    case 33: return "["
+    case 34: return "i"
+    case 35: return "p"
+    case 37: return "l"
+    case 38: return "j"
+    case 39: return "'"
+    case 40: return "k"
+    case 41: return ";"
+    case 42: return "\\"
+    case 43: return ","
+    case 44: return "/"
+    case 45: return "n"
+    case 46: return "m"
+    case 47: return "."
+    case 50: return "`"
+    default: return nil
+    }
+}
+
+/// The base key for a key press. `produced` is the character the ACTIVE layout puts on that key with no
+/// modifiers applied (the app-side monitors pass what the `NSEvent` reports), and
+/// `layoutIsASCIICapable` says whether that layout can type ASCII at all.
+///
+/// The choice is made per LAYOUT, not per key. An ASCII-capable layout — US, Dvorak, Colemak,
+/// US-International, French, German — binds by the character it produces, so a chord follows the letter
+/// the user sees on the key and an alternative Latin layout keeps its own letter positions. A layout that
+/// cannot type ASCII — Russian, Greek, Hebrew, Arabic, Thai — can never produce a character a
+/// `keymap.conf` chord is spelled with, so every one of its keys binds by physical position via
+/// `latinKey(forKeyCode:)`.
+///
+/// Deciding per key instead (keeping any produced character that happens to be ASCII) does not work:
+/// Greek types `;` on the Q position and Hebrew types `/` there, so a Latin-spelled letter chord would
+/// stay dead on exactly the layouts this exists to serve, and two physical keys could collapse onto one
+/// chord — on Hebrew the `'` key produces `,` while the `,` key falls back to `,`. Resolving the whole
+/// layout at once keeps `latinKey`'s one-key-per-position mapping intact, so no two TABLE positions can
+/// collapse. A key code outside the table keeps what it types, which still aliases the table for the
+/// keypad — keypad `5` and the number row both give `"5"` — exactly as it did before any of this, since
+/// the keypad's output does not vary by layout.
+///
+/// This is a different rule from `InterruptKeystroke.isInterrupt`, which tests the produced character
+/// itself (is it a Latin letter?) rather than the layout. That one classifies a single hardcoded key, so
+/// it needs no layout context; a chord needs the whole ANSI vocabulary and does.
+///
+/// Returns `nil` when the press carries no usable base key. On a non-ASCII-capable layout that means a
+/// position outside `latinKey`'s table that produced nothing, plus the ISO section key; a dead key at a
+/// TABLE position resolves to its Latin key rather than to `nil`. On an ASCII-capable layout it means
+/// anything that produced nothing at all, table position or not — that branch never consults the table.
+public func chordKey(forKeyCode keyCode: UInt16, produced: String?, layoutIsASCIICapable: Bool) -> String? {
+    // space is a named key (`namedKey(forKeyCode:)` claims keyCode 49); a produced space is not a base key.
+    let base = produced?.first.map { String($0).lowercased() }.flatMap { $0 == " " ? nil : $0 }
+    guard !layoutIsASCIICapable else { return base }
+    if let latin = latinKey(forKeyCode: keyCode) { return latin }
+    // the ISO section key — the extra key an ISO keyboard carries and an ANSI one does not — has no
+    // position in the table AND types a layout-dependent character, so keeping it would alias whichever
+    // table position types the same thing: Ukrainian-PC types `\` there against the ANSI backslash key,
+    // Hebrew-PC types `;` there against the ANSI semicolon key. Both would fire one binding from two
+    // keys and swallow the keystroke. It cannot spell a chord on a layout resolved by position.
+    return keyCode == isoSectionKeyCode ? nil : base
+}
+
+/// The ISO-only key left of Z (macOS `kVK_ISO_Section`), absent from an ANSI keyboard and from `latinKey`.
+private let isoSectionKeyCode: UInt16 = 10
+
+/// The named key for a menu item's key-equivalent CHARACTER, or `nil` for an ordinary printable key.
+///
+/// The character counterpart of `namedKey(forKeyCode:)`, for projecting live `NSMenuItem` key
+/// equivalents back into keymap syntax: a menu item carries a character rather than a virtual key code,
+/// and AppKit spells the arrows with private-use function-key scalars and return/tab/space/delete with
+/// control characters. Without this a menu chord renders as `cmd+opt+` with the key missing, which
+/// cannot be compared against the `cmd+opt+up` the keymap resolved.
+///
+/// Kept host-free by matching the scalar values rather than the AppKit constants, so `agtermCore` stays
+/// AppKit-free; the values are the documented `NSUpArrowFunctionKey` family.
+public func namedKey(forKeyEquivalent character: String) -> String? {
+    let scalars = character.unicodeScalars
+    guard scalars.count == 1, let scalar = scalars.first else { return nil }
+    switch scalar.value {
+    case 0xF700: return "up"
+    case 0xF701: return "down"
+    case 0xF702: return "left"
+    case 0xF703: return "right"
+    case 0x0D, 0x03: return "return" // carriage return, and the numeric keypad's enter
+    case 0x09: return "tab"
+    case 0x20: return "space"
+    case 0x08, 0x7F: return "delete" // backspace, and forward delete
     default: return nil
     }
 }

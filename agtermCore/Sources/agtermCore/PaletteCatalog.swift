@@ -7,7 +7,15 @@ public struct PaletteContext: Sendable, Equatable {
     public let sidebarShowsWorkspaceTree: Bool
     public let sidebarShowsFlaggedOnly: Bool
     public let activeSessionFlagged: Bool
-    public let hasFocusedWorkspace: Bool
+    /// Whether ANY workspace is MARKED in the focus set — membership, NOT whether the filter is applied
+    /// (`workspaceFilter`). Named for the fact it reports: the marked set is what Clear Focus empties and
+    /// what Toggle Workspace Filter has something to apply.
+    public let hasMarkedWorkspaces: Bool
+    /// Whether the CURRENT workspace is already marked, so "Add Workspace to Focus" can hide instead of
+    /// offering a silent no-op (unlike the sidebar row's item, which has a clicked row and flips its label
+    /// to "Remove from Focus"). The ONLY term that entry keys on, matching the View-menu twin's disabled
+    /// predicate — marking is offered in either sidebar mode.
+    public let activeWorkspaceMarked: Bool
     public let activeSessionHasSplit: Bool
     public let hasPendingClose: Bool
     public let hasRecentClosed: Bool
@@ -17,7 +25,8 @@ public struct PaletteContext: Sendable, Equatable {
                 sidebarShowsWorkspaceTree: Bool = false,
                 sidebarShowsFlaggedOnly: Bool = false,
                 activeSessionFlagged: Bool = false,
-                hasFocusedWorkspace: Bool = false,
+                hasMarkedWorkspaces: Bool = false,
+                activeWorkspaceMarked: Bool = false,
                 activeSessionHasSplit: Bool = false,
                 hasPendingClose: Bool = false,
                 hasRecentClosed: Bool = false) {
@@ -26,7 +35,8 @@ public struct PaletteContext: Sendable, Equatable {
         self.sidebarShowsWorkspaceTree = sidebarShowsWorkspaceTree
         self.sidebarShowsFlaggedOnly = sidebarShowsFlaggedOnly
         self.activeSessionFlagged = activeSessionFlagged
-        self.hasFocusedWorkspace = hasFocusedWorkspace
+        self.hasMarkedWorkspaces = hasMarkedWorkspaces
+        self.activeWorkspaceMarked = activeWorkspaceMarked
         self.activeSessionHasSplit = activeSessionHasSplit
         self.hasPendingClose = hasPendingClose
         self.hasRecentClosed = hasRecentClosed
@@ -44,6 +54,7 @@ public enum PaletteCommand: String, CaseIterable, Sendable {
     case increaseFontSize, decreaseFontSize, resetFontSize, selectTheme
     case editKeymap, reloadKeymap, editGhosttyConfig, reloadConfig
     case deleteWorkspace, toggleFlaggedView, clearFlagged, clearFocus
+    case addWorkspaceToFocus, toggleWorkspaceFilter
     case expandWorkspaces, collapseWorkspaces, focusLeftPane, focusRightPane
 
     public func isVisible(in context: PaletteContext) -> Bool {
@@ -54,8 +65,20 @@ public enum PaletteCommand: String, CaseIterable, Sendable {
             return context.sidebarShowsFlaggedOnly || context.hasFlaggedSessions
         case .clearFlagged:
             return context.hasFlaggedSessions
-        case .clearFocus:
-            return context.hasFocusedWorkspace
+        case .clearFocus, .toggleWorkspaceFilter:
+            // nothing marked means nothing to clear and nothing to filter to, and the store refuses to
+            // enable an empty set — the same state the bottom-bar toggle renders disabled in, so the two
+            // surfaces agree.
+            return context.hasMarkedWorkspaces
+        case .addWorkspaceToFocus:
+            // hidden only where it would be a silent no-op — the current workspace is already a member.
+            // The row menu instead flips to "Remove from Focus", which it can do having a clicked row;
+            // this keyless entry targets `currentWorkspaceID`. Deliberately NOT gated on the sidebar mode:
+            // membership is model state that the tree applies the moment it is shown again, and every
+            // sibling is mode-agnostic too — the View-menu item, Focus Workspace, Toggle Workspace Filter,
+            // Clear Focus, the `focus_workspace` keybind, and `workspace.focus`/`workspace.filter`. The
+            // tree-mode gate belongs to expand/collapse, which manipulate rows flagged mode never renders.
+            return !context.activeWorkspaceMarked
         case .expandWorkspaces, .collapseWorkspaces:
             return context.sidebarShowsWorkspaceTree
         case .focusLeftPane, .focusRightPane:
@@ -114,6 +137,8 @@ public enum PaletteCommand: String, CaseIterable, Sendable {
         case .toggleFlaggedView: return context.sidebarShowsFlaggedOnly ? "Show All Sessions" : "Show Flagged Sessions"
         case .clearFlagged: return "Clear Flagged"
         case .clearFocus: return "Clear Focus"
+        case .addWorkspaceToFocus: return "Add Workspace to Focus"
+        case .toggleWorkspaceFilter: return "Toggle Workspace Filter"
         case .expandWorkspaces: return "Expand Workspaces"
         case .collapseWorkspaces: return "Collapse Workspaces"
         case .focusLeftPane: return "Focus Left Pane"
@@ -156,10 +181,11 @@ public enum PaletteCommand: String, CaseIterable, Sendable {
         case .selectTheme: return .selectTheme
         case .deleteWorkspace: return .deleteWorkspace
         case .toggleFlaggedView: return .toggleFlaggedView
+        case .toggleWorkspaceFilter: return .toggleWorkspaceFilter
         case .focusLeftPane: return .focusLeftPane
         case .focusRightPane: return .focusRightPane
         case .editKeymap, .reloadKeymap, .editGhosttyConfig, .reloadConfig,
-             .clearFlagged, .clearFocus, .expandWorkspaces, .collapseWorkspaces:
+             .clearFlagged, .clearFocus, .addWorkspaceToFocus, .expandWorkspaces, .collapseWorkspaces:
             return nil
         }
     }

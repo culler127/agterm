@@ -136,13 +136,24 @@ extension WorkspaceSidebar.Coordinator {
             openSession.target = self
             openSession.representedObject = node
             menu.addItem(openSession)
-            // "Focus"/"Unfocus" collapses the tree to this workspace's subtree (or restores all when it
-            // is already the focused one); the label reflects the current state.
-            let focused = store.focusedWorkspaceID == node.id
+            // the two focus items are their own group: they filter what the tree shows, unlike the
+            // create items above and the destructive one below.
+            menu.addItem(.separator())
+            // "Focus"/"Unfocus" REPLACES the marked set with this workspace (or clears it when this is
+            // already the only marked one, with the filter on); the label reflects the current state.
+            let focused = store.isSoleFocus(node.id) // the same predicate the item's action toggles on
             let focus = NSMenuItem(title: focused ? "Unfocus" : "Focus", action: #selector(menuFocusWorkspace(_:)), keyEquivalent: "")
             focus.target = self
             focus.representedObject = node
             menu.addItem(focus)
+            // "Add to Focus"/"Remove from Focus" toggles THIS workspace's membership, leaving the other
+            // marked workspaces alone — how a multi-workspace working set is built up row by row.
+            let member = store.focusedWorkspaceIDs.contains(node.id)
+            let membership = NSMenuItem(title: member ? "Remove from Focus" : "Add to Focus",
+                                        action: #selector(menuToggleFocusMembership(_:)), keyEquivalent: "")
+            membership.target = self
+            membership.representedObject = node
+            menu.addItem(membership)
             menu.addItem(.separator())
             let delete = NSMenuItem(title: "Delete Workspace", action: #selector(menuDeleteWorkspace(_:)), keyEquivalent: "")
             delete.target = self
@@ -228,12 +239,25 @@ extension WorkspaceSidebar.Coordinator {
 
     @objc private func menuDeleteWorkspace(_ sender: NSMenuItem) {
         guard let node = sender.representedObject as? SidebarNode else { return }
-        actions.deleteWorkspace(node.id)
+        // pass THIS sidebar's window-local store, like Close/Flag/Duplicate/Focus: the item's enabled state
+        // came from `store.canRemoveWorkspace`, so a background window's row must delete its own workspace —
+        // routing through the frontmost store would not find the id there and would silently do nothing.
+        actions.deleteWorkspace(node.id, in: store)
     }
 
     @objc private func menuFocusWorkspace(_ sender: NSMenuItem) {
         guard let node = sender.representedObject as? SidebarNode else { return }
-        actions.focusWorkspace(node.id)
+        // pass THIS sidebar's window-local store, like Close/Flag/Duplicate: the "Focus"/"Unfocus" label
+        // was computed from it, so a background window's row must toggle its own tree — routing through
+        // the frontmost store would read one window and write another.
+        actions.focusWorkspace(node.id, in: store)
+    }
+
+    /// Direction is derived from the same store the item's label was built from — and applied to that
+    /// store — so the action always matches what the row's menu reads, in a background window too.
+    @objc private func menuToggleFocusMembership(_ sender: NSMenuItem) {
+        guard let node = sender.representedObject as? SidebarNode else { return }
+        actions.setFocusMembership(node.id, member: !store.focusedWorkspaceIDs.contains(node.id), in: store)
     }
 
     /// "Open Directory…": pick a folder and add a session rooted there.

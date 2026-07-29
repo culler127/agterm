@@ -2,7 +2,7 @@
 
 [![Build Status](https://github.com/umputun/agterm/workflows/build/badge.svg)](https://github.com/umputun/agterm/actions) [![Coverage Status](https://coveralls.io/repos/github/umputun/agterm/badge.svg?branch=master)](https://coveralls.io/github/umputun/agterm?branch=master)
 
-**[agterm.com](https://agterm.com)** · [Documentation](https://agterm.com/docs) · [Command reference](https://agterm.com/commands)
+**[agterm.com](https://agterm.com)** · [Documentation](https://agterm.com/docs) · [Command reference](https://agterm.com/commands) · [Cookbook](cookbook/)
 
 `agterm` is a native macOS terminal for working with AI coding agents across many sessions at once. It is intentionally opinionated: rather than scattering shells across tabs, it organizes them into named workspaces, each holding the sessions for one project or context, so several agent-driven sessions can run side by side and you can move between them without losing track of which is which. The motivation is specific: running several coding agents at once means many long-lived sessions, each progressing on its own, and a tabbed terminal loses track of them quickly. agterm keeps them organized and makes it obvious which session needs you. None of this is limited to agents. It also works as a capable general-purpose terminal for everyday multi-project work.
 
@@ -150,11 +150,11 @@ agterm arranges terminals into a small hierarchy. These are the only terms you n
 
 **Window.** A window is a whole set of workspaces and sessions in its own on-screen macOS window, with its own sidebar. Each window has its own sessions, so "work" and "personal" can run as two separate windows at once, each with its own tree. You keep a library of windows and open one per on-screen window; the windows open at quit reopen on the next launch with their frames. Windows are also fully scriptable: `agtermctl window` can create, raise, move, resize, and minimize them, so a few lines of shell can give every window the same frame and park all but the one you are on, turning several windows into what feels like one that switches contents. Right-click agterm's Dock icon for New Session, Quick Terminal, Dashboard, recent sessions, and sessions needing attention. The Dock menu is scoped to the last-active window: its lists and actions stay tied to that window even if another window comes forward while the menu is open.
 
-**Flagging and focus.** Two ways to cut down a busy sidebar. Flag a few sessions from different workspaces to get a flat working-set view of just those; a flag is durable and survives a move. Focus a single workspace to hide the others, with a one-click way back. The two are independent.
+**Flagging and focus.** Two ways to cut down a busy sidebar. Flag a few sessions from different workspaces to get a flat working-set view of just those; a flag is durable and survives a move. Focus a set of workspaces to hide the rest, with a one-click way back. **Focus** in a workspace row's context menu zooms to that one workspace, and **Add to Focus** marks it alongside whatever is already marked — marking alone never narrows the tree, so a working set is built row by row with everything still on screen and applied once with the grid button at the bottom of the sidebar. A marked workspace row draws a heavier grid icon; the button applies or suspends the filter without losing the set, and is disabled when nothing is marked. Creating a workspace while the filter is on adds it to the set, and selecting a session outside the set suspends the filter rather than discarding it. The set is per-window and remembered across restarts. The two are independent.
 
 Sidebar session rows support Shift-click range selection and Cmd-click toggling for batch work. Right-clicking inside a multi-selection keeps the batch for Flag/Unflag, Close, and Move to; right-clicking outside narrows to the clicked row. Dragging from a selected row moves the selected sessions as one ordered block. **Duplicate Session** — in a single session's context menu, right after Rename — opens a fresh session in the same workspace, right after that one, in its current directory (a plain new shell: only the directory carries over, nothing else about the session does).
 
-**Finder integration.** In the tree view, drag folders from Finder onto a workspace or session row to open one session per folder there; drop on empty sidebar space to use the focused/current workspace. Collapsed workspaces spring open while you hover and close again if you cancel. Dropping more than 20 folders at once is rejected. **Reveal in Finder** in the session context menu or main menu selects the focused pane's current directory (and is disabled if that directory no longer exists). Folder-picking panels also start in the focused pane's directory when it is available.
+**Finder integration.** In the tree view, drag folders from Finder onto a workspace or session row to open one session per folder there; drop on empty sidebar space to use the current workspace, or the focused one when the filter is applied to exactly one workspace (the only case where the tree shows a single unambiguous target). Collapsed workspaces spring open while you hover and close again if you cancel. Dropping more than 20 folders at once is rejected. **Reveal in Finder** in the session context menu or main menu selects the focused pane's current directory (and is disabled if that directory no longer exists). Folder-picking panels also start in the focused pane's directory when it is available.
 
 **Notifications.** A program in any session can raise a desktop notification (via OSC 9 / 777, or the control API). It shows as a banner and a count badge on the session's row; clicking the banner jumps to the exact pane that raised it. When agterm is in the background, an opt-in setting can bounce its Dock icon once, or keep it bouncing until you focus agterm (off by default). An optional notification sound (default None) attaches a system sound to each delivered banner — say, an agent finishing a turn in a background session; it rides the banner, so it follows the banner toggle and is silenced by Do Not Disturb. The badge clears when you visit the session, or headlessly with `agtermctl session seen` — so an orchestrator driving a session over the socket can acknowledge its notifications without pulling focus to it (`agtermctl tree --json` reports each session's `unseen` count). For a coding agent that just needs to say it is waiting on you, [Agent status](#agent-status) is usually the better fit.
 
@@ -174,7 +174,7 @@ The same recently-used history decides where you land when you close the session
 
 ## Settings
 
-Settings (Cmd+,) has six tabs. **General** covers mouse scroll speed and right-click-to-paste, where a new session opens, an opt-in toggle to re-run each pane's foreground command on restart, an opt-in confirmation before closing a session, and whether to load your global Ghostty config. **Appearance** sets the terminal font and theme (512 bundled themes), the toolbar mode, the window background opacity and blur, the sidebar tint, the sidebar font size, and how much the inactive split pane dims; a "Follow system appearance" toggle (off by default) reveals a second picker for the other appearance, so the theme tracks macOS light/dark mode live. With macOS Reduce Transparency enabled, agterm temporarily presents translucent windows, command palettes, and session switchers as opaque and unblurred without changing the saved opacity or blur; disabling it restores those settings. Reduce Motion keeps status colors and glyphs visible but suppresses their repeating sidebar and dashboard pulses. The toolbar has three modes: **Normal** shows the title with the working directory beneath it, **Compact** (the default) is a single title row, and **Hidden** drops the whole titlebar row and the window's traffic-light buttons for a full-bleed terminal with no chrome — an invisible strip along the top edge still moves the window and double-click-zooms it, and you close, minimize, or zoom the window from the keyboard or the Window menu. **Interface** turns individual chrome controls on or off, each shown by default: in the title bar the sidebar toggle, the session name, the window name, and the recent-sessions, scratch, split, dashboard, and quick-terminal buttons; in the sidebar the new-workspace, new-session, and flagged-view footer buttons plus the per-workspace add-session "+" revealed on hover — so you can pare the chrome down to just what you use (the actions stay available from the menus, keyboard, and control channel). A **Multiple Windows** option (off by default) shows the sidebar only in the frontmost window and collapses it on every other, so with several windows open only the one you are working in carries a sidebar; switching windows moves the sidebar with focus, and switching to another app leaves every sidebar as it was. **Notifications** covers the banner, the unseen-count badge, the Dock-icon bounce for a background notification (off, once, or until you focus agterm), the notification sound (a system sound played when a notification is delivered; None by default), and the title-bar attention indicator. **Agent Status** sets the status-glyph colors and shapes, the blocked-session sound, and an idle timeout to auto-follow blocked sessions. **Key Mapping** points at the directory holding `keymap.conf`, lists any parse errors, and reloads it. Changes apply live to the open terminals.
+Settings (Cmd+,) has six tabs. **General** covers mouse scroll speed and right-click-to-paste, where a new session opens, an opt-in toggle to re-run each pane's foreground command on restart, an opt-in confirmation before closing a session, and whether to load your global Ghostty config. **Appearance** sets the terminal font and theme (512 bundled themes), the toolbar mode, the window background opacity and blur, the sidebar tint, the sidebar font size, and how much the inactive split pane dims; a "Follow system appearance" toggle (off by default) reveals a second picker for the other appearance, so the theme tracks macOS light/dark mode live. With macOS Reduce Transparency enabled, agterm temporarily presents translucent windows, command palettes, and session switchers as opaque and unblurred without changing the saved opacity or blur; disabling it restores those settings. Reduce Motion keeps status colors and glyphs visible but suppresses their repeating sidebar and dashboard pulses. The toolbar has three modes: **Normal** shows the title with the working directory beneath it, **Compact** (the default) is a single title row, and **Hidden** drops the whole titlebar row and the window's traffic-light buttons for a full-bleed terminal with no chrome — an invisible strip along the top edge still moves the window and double-click-zooms it, and you close, minimize, or zoom the window from the keyboard or the Window menu. **Interface** turns individual chrome controls on or off, each shown by default: in the title bar the sidebar toggle, the session name, the window name, and the recent-sessions, scratch, split, dashboard, and quick-terminal buttons; in the sidebar the new-workspace, new-session, flagged-view, and workspace-filter footer buttons plus the per-workspace add-session "+" revealed on hover — so you can pare the chrome down to just what you use (the actions stay available from the menus, keyboard, and control channel). A **Multiple Windows** option (off by default) shows the sidebar only in the frontmost window and collapses it on every other, so with several windows open only the one you are working in carries a sidebar; switching windows moves the sidebar with focus, and switching to another app leaves every sidebar as it was. **Notifications** covers the banner, the unseen-count badge, the Dock-icon bounce for a background notification (off, once, or until you focus agterm), the notification sound (a system sound played when a notification is delivered; None by default), and the title-bar attention indicator. **Agent Status** sets the status-glyph colors and shapes, the blocked-session sound, and an idle timeout to auto-follow blocked sessions. **Key Mapping** points at the directory holding `keymap.conf`, lists any parse errors, and reloads it. Changes apply live to the open terminals.
 
 The theme picker (View ▸ Select Theme…, or the action palette) previews each bundled theme on the open terminals as you move through the list, so you see it before committing. Enter commits and syncs it to Settings; Esc reverts to the one you started on. While following the system appearance, the picker edits the theme for the appearance you are in; the control channel drives both slots with `agtermctl theme set --light NAME --dark NAME` (or either flag alone).
 
@@ -184,7 +184,7 @@ The theme picker (View ▸ Select Theme…, or the action palette) previews each
 
 To open a terminal at a directory without the CLI, `open -a agterm <path>` — or right-click a folder in Finder and choose **Open With ▸ agterm**. agterm adds a session in that directory to the last-active window. This works when agterm is already running (its usual state); if it isn't, launch agterm first, then run the command. The socket equivalent, and the way to place the session precisely, is `agtermctl session new --cwd <path>`.
 
-The sections below cover the common cases. All 66 commands, with every argument, return value, and error, are documented in the **[Command reference](https://agterm.com/commands)**.
+The sections below cover the common cases. All 68 commands, with every argument, return value, and error, are documented in the **[Command reference](https://agterm.com/commands)**.
 
 The app bundles `agtermctl` inside `agterm.app`. The easiest way to put it on your PATH is **Help ▸ Install Command Line Tool…**, which symlinks the bundled binary into `/usr/local/bin` (the first entry in macOS's default PATH). When that directory is user-writable it installs silently; otherwise it asks once for an administrator password.
 
@@ -231,7 +231,7 @@ agtermctl session new --cwd ~/src/agterm --no-select  # create in the background
 agtermctl session duplicate --target 9f3c        # a second plain shell in that session's workspace and cwd, right after it (only the directory carries over)
 agtermctl session type --target 9f3c $'make test\n'      # inject text into a session by id prefix
 echo 'make test' | agtermctl session type --target active --stdin
-agtermctl session go --to next                   # step to the next session (next|prev|first|last; stops at ends)
+agtermctl session go --to next                   # step to the next session (next|prev|first|last; wraps at the ends, within the visible set)
 agtermctl session move --to up                   # reorder the active session within its workspace (up|down|top|bottom)
 agtermctl session move "$ws"                      # relocate the active session to another workspace (appends)
 agtermctl session move --after 9f3c              # place the active session right after another (--before to precede it); relocates cross-workspace if the anchor lives elsewhere
@@ -247,7 +247,9 @@ agtermctl session flag on                        # flag the active session for t
 agtermctl session reveal --target 9f3c           # reveal the focused pane's cwd in Finder
 agtermctl session seen --target 9f3c             # clear a session's unseen-notification badge without visiting it (focus-free)
 agtermctl sidebar mode flagged                   # show only the flagged sessions as a flat list (tree|flagged|toggle)
-agtermctl workspace focus on                     # collapse the sidebar tree to the active workspace (on|off|toggle)
+agtermctl workspace focus on                     # mark the active workspace alone and apply the sidebar focus filter (on|off|toggle|add)
+agtermctl workspace focus add --target a1b2      # mark another workspace too; add never narrows the tree on its own
+agtermctl workspace filter on                    # apply the marked set (on|off|toggle); filter off suspends it without losing the set
 agtermctl session search "error"                 # open the search bar and highlight matches; prints the "N of M" counter
 agtermctl session search --next                  # step to the next match (--prev steps back, --close hides the bar)
 agtermctl quick toggle                           # toggle the quick terminal (show|hide|toggle)
@@ -339,6 +341,12 @@ agtermctl session type --target "$AGTERM_SESSION_ID" $'\n'   # type into this ve
 agtermctl tree --socket "$AGTERM_SOCKET"                     # reach the same agterm this shell runs in
 ```
 
+## Cookbook
+
+The [cookbook](cookbook/) collects complete `agtermctl` workflows, each in its own directory with a README and, where it needs one, its scripts: switching the sidebar to a single project, closing a project's workspaces and bringing them back later, picking a path with `fzf` and typing it into the shell, and giving each tab its own Claude Code or Codex conversation across a restart. They are written to be copied into your own setup and edited, not only read; [cookbook/CONTRIBUTING.md](cookbook/CONTRIBUTING.md) has the rules for adding one.
+
+Recipes come from other people as well as the maintainer. Every one is reviewed before it is accepted, but they are shell scripts you run on your own machine against your own sessions, and several close sessions or delete workspaces, so read a recipe before you run it.
+
 ## Customizing keys
 
 `agterm` reads a user-editable, kitty-flavored keymap file at `~/.config/agterm/keymap.conf`. It does two things: rebind the built-in menu shortcuts, and define custom shell commands bound to keys (and listed in the action palette). The file is optional — the app ships with working defaults, and a commented starter `keymap.conf` is written on first launch. The directory holding it can be changed in **Settings ▸ Key Mapping** (the field shows the active path, with a "Choose…" picker and "Use Default").
@@ -358,6 +366,8 @@ command "Deploy"                    ./deploy.sh
 
 A chord is modifier words joined by `+` and a base key, e.g. `cmd+shift+e` or `ctrl+\``. The modifiers are `ctrl`, `cmd`, `opt`, and `shift`. The base key is a single character or one of `tab`, `space`, `return`, `delete`, `left`, `right`, `up`, `down`. A key you type with Shift is written as `shift+<base key>` (the base key, not the shifted symbol): `shift+/` for `?`, `shift+5` for `%`, `shift+=` for `+`, `shift+.` for `>`. A custom command's chord may also be a leader sequence — chords separated by `>`, e.g. `ctrl+a>g` (press `ctrl+a`, then `g`). A `command` with no chord is palette-only. A custom command's chord must include a modifier: a bare key like `a` is rejected with a diagnostic and the line is treated as palette-only, so a binding can't silently shadow a plain terminal key. The same diagnostic appears when the shell line simply starts with a bare key name — a single character, or one of the named keys like `up` or `tab` — and the line is kept as palette-only with its shell command intact.
 
+Chords are written in Latin and keep working on a non-Latin keyboard layout. A layout that cannot type ASCII — Russian, Greek, Hebrew, Arabic, Thai — resolves every chord by the physical key position, so `cmd+o` still fires on the key marked O even though it types `щ`. A layout that can type ASCII binds what it types, so an alternative Latin layout keeps its own letter positions: on Dvorak, `cmd+o` follows the O you actually type.
+
 The bindable built-in action names are:
 
 ```
@@ -368,7 +378,7 @@ close_session      reopen_recent      undo_close         clear_status
 increase_font_size decrease_font_size reset_font_size
 toggle_split       toggle_scratch     toggle_search
 toggle_sidebar     toggle_flag        toggle_flagged_view
-focus_left_pane    focus_right_pane   focus_workspace
+focus_left_pane    focus_right_pane   focus_workspace    toggle_workspace_filter
 previous_session   next_session       first_session      last_session
 previous_attention_session            next_attention_session
 quick_terminal     session_palette    command_palette
@@ -395,6 +405,8 @@ A `{AGT_X}` token is substituted **raw** into the shell line — convenient, but
 Open the file in your editor with **File ▸ Edit Keymap…** or the ⌃⇧P palette ("Edit Keymap"): it opens in a 95% overlay running `$VISUAL`/`$EDITOR` (falling back to `vi`), and reloads automatically when you save and quit. The editor is resolved through your interactive login shell, so an `$EDITOR`/`$VISUAL` set anywhere your normal terminal picks it up (including `~/.zshrc`) is honored.
 
 After editing the file, apply it with **File ▸ Reload Keymap**, the action palette (⌃⇧P → "Reload Keymap"), or `agtermctl keymap reload`. A malformed line never discards the rest of the file — it surfaces in the diagnostics list in Settings ▸ Key Mapping (and `keymap.reload` returns the diagnostic count) while the good lines still apply.
+
+To check what is actually bound, `agtermctl keymap list` prints every built-in with the chord it resolved to, the custom commands, each diagnostic in full, and the key equivalents the menu bar is really carrying. If a binding will not fire, compare the last two: an action whose chord no menu item holds is usually a menu problem, not a keymap one. The one deliberate exception is `undo_close` (⌘Z), which is delivered by a key monitor rather than a menu item so it never appears under the menu list.
 
 v1 limitations:
 
@@ -425,6 +437,14 @@ macos-option-as-alt = true
 ```
 
 Put that in `ghostty.conf`. It also works in your global `~/.config/ghostty/config` once you enable the toggle above. The full key reference is at <https://ghostty.org/docs/config>.
+
+A `keybind` you write here follows ghostty's own rules, which differ from `keymap.conf`: a bare letter or digit binds the *character* the active layout produces, so `keybind = super+opt+ctrl+g=text:hello` stops firing the moment you switch to a non-Latin layout, where that key types `п`. Prefix the key with `key_` to bind the physical position instead:
+
+```
+keybind = super+opt+ctrl+key_g=text:hello
+```
+
+That form works on any layout. agterm's own bundled defaults already use it for ⌘C, ⌘V, and ⌘A, which is why copy, paste, and select-all keep working on a Cyrillic or Greek layout.
 
 Programs running in the terminal can read and write the macOS clipboard over OSC 52. agterm prompts before a program **reads** your clipboard, because a read hands its contents (which may include passwords or tokens) back to the program; a normal ⌘V paste is never prompted. Clipboard **writes** go through by default, matching other terminals so a remote `tmux`/`vim` yank still reaches your clipboard. To gate writes too, set `clipboard-write = ask` (prompt) or `clipboard-write = deny` (block) in `ghostty.conf`. Each prompt offers *Don't ask again this session*, which remembers your choice until agterm quits.
 

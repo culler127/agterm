@@ -30,7 +30,7 @@ final class UndoCloseShortcut {
         return true
     }
 
-    private func chord(from event: NSEvent) -> Chord? {
+    func chord(from event: NSEvent) -> Chord? {
         var mods: Modifier = []
         let flags = event.modifierFlags
         if flags.contains(.control) { mods.insert(.control) }
@@ -38,7 +38,15 @@ final class UndoCloseShortcut {
         if flags.contains(.option) { mods.insert(.option) }
         if flags.contains(.shift) { mods.insert(.shift) }
 
-        let key = namedKey(forKeyCode: event.keyCode) ?? event.charactersIgnoringModifiers?.lowercased()
+        // a layout that cannot type ASCII resolves to the Latin key at the same physical position, so ⌘Z
+        // still reopens a closed item on a Cyrillic layout (where that key types `я`). Unlike
+        // `CustomCommandRunner.chord(from:)` the produced character here KEEPS shift (`shift+/` reports
+        // `?`), so a shifted-symbol chord does not match on a Latin layout — pre-existing, and the reason
+        // this monitor's `NSEvent` seam is the testable one (a synthesized event reports this accessor
+        // verbatim).
+        let key = namedKey(forKeyCode: event.keyCode)
+            ?? chordKey(forKeyCode: event.keyCode, produced: event.charactersIgnoringModifiers,
+                        layoutIsASCIICapable: KeyboardLayout.isASCIICapable)
         guard let key, key.count == 1 || bindableNamedKeys.contains(key) else { return nil }
         return Chord(mods: mods, key: key)
     }

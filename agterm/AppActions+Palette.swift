@@ -26,7 +26,8 @@ extension AppActions {
             sidebarShowsWorkspaceTree: activeStore?.sidebarMode == .tree,
             sidebarShowsFlaggedOnly: activeStore?.sidebarMode == .flagged,
             activeSessionFlagged: activeStore?.activeSession?.flagged == true,
-            hasFocusedWorkspace: activeStore?.focusedWorkspaceID != nil,
+            hasMarkedWorkspaces: activeStore?.focusedWorkspaceIDs.isEmpty == false,
+            activeWorkspaceMarked: activeStore?.isCurrentWorkspaceFocusMember == true,
             activeSessionHasSplit: activeStore?.activeSession?.hasSplit == true,
             hasPendingClose: activeStore?.pendingCloseSummary != nil,
             hasRecentClosed: !library.recentClosedItems.isEmpty
@@ -82,6 +83,8 @@ extension AppActions {
         case .toggleFlaggedView: toggleFlaggedView()
         case .clearFlagged: clearFlags()
         case .clearFocus: clearFocus()
+        case .addWorkspaceToFocus: addActiveWorkspaceToFocus()
+        case .toggleWorkspaceFilter: toggleFocusFilter()
         case .expandWorkspaces: expandAllWorkspaces()
         case .collapseWorkspaces: collapseOtherWorkspaces()
         case .focusLeftPane: focusPane(.main)
@@ -145,8 +148,8 @@ extension AppActions {
     }
 
     /// The VISIBLE/FILTERED sessions as palette items (the ⌃P switcher); choosing one selects it. Scoped
-    /// to `navigableSessions` — the focused workspace's sessions when a workspace is focused, the flagged
-    /// set in flagged mode, else all — so the ⌃P list matches the sidebar (and the Ctrl-Tab MRU switcher
+    /// to `navigableSessions` — the MARKED workspaces' sessions while the focus filter is applied, the
+    /// flagged set in flagged mode, else all — so the ⌃P list matches the sidebar (and the Ctrl-Tab MRU switcher
     /// and `session.go` nav, which already filter the same way). The subtitle leads with the owning
     /// workspace (so you can tell sessions of the same name apart, and search by workspace) followed by
     /// `subtitleDetail` (the focused pane's terminal title for a remote session, else its cwd).
